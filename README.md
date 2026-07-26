@@ -22,17 +22,6 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 
 ![app demo](artwork/screenshot1.png)
 
-## Parts
-
-| Directory | What it is |
-|-----------|------------|
-| `sender/` | Mac app (Swift, macOS 13+). Virtual display via `CGVirtualDisplay`, ScreenCaptureKit capture, MJPEG over TCP, CGEvent touch injection. |
-| `receiver/` | TouchPad PDK app (C, SDL 1.2 + OpenGL ES 1.1, NEON libjpeg-turbo). |
-| `receiver/PROTOCOL.md` | The tiny wire protocol between them. |
-| `server-test/` | Python reference server for receiver development. |
-| `artwork/` | Icons. |
-| `phase0/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
-
 ## Quick start
 
 Ensure your TouchPad is in Developer Mode, connected to the same WiFi network, and optionally (but recommended) [connected to your Mac via USB with novacom](https://docs.webosarchive.org/appstores/#prepare-your-computer) to enable auto-configuration.
@@ -60,6 +49,17 @@ echo "host=<your-mac-ip>" > /media/internal/secondscreen.conf
 
 The receiver reconnects automatically every 2 s, so start/stop order
 never matters.
+
+## Parts
+
+| Directory | What it is |
+|-----------|------------|
+| `sender/` | Mac app (Swift, macOS 13+). Virtual display via `CGVirtualDisplay`, ScreenCaptureKit capture, MJPEG over TCP, CGEvent touch injection. |
+| `receiver/` | TouchPad PDK app (C, SDL 1.2 + OpenGL ES 1.1, NEON libjpeg-turbo). |
+| `receiver/PROTOCOL.md` | The tiny wire protocol between them. |
+| `server-test/` | Python reference server for receiver development. |
+| `artwork/` | Icons. |
+| `phase0/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
 
 ## Building
 
