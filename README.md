@@ -1,0 +1,84 @@
+# webOS Second Screen
+
+Turn an HP TouchPad (webOS 3.0.5, released 2011) into a **wireless second
+monitor for your Mac** — Duet/Sidecar-style. The Mac creates a real
+virtual 1024×768 display, streams it to the TouchPad over WiFi at
+~20–25 fps, and taps on the TouchPad control the Mac's cursor.
+
+![app icon](artwork/webOS-SecondScreen-256.png)
+
+## What you get
+
+- A true **extended desktop** (not a mirror): the virtual display shows
+  up in System Settings → Displays, you arrange it like any monitor, and
+  windows dragged onto it appear on the TouchPad.
+- **Touch control**: tap, drag, double-tap on the TouchPad → mouse on
+  the Mac.
+- **Plug-and-play setup**: connect the TouchPad over USB once, open the
+  Mac app — it configures and launches the receiver automatically
+  (streaming itself runs over WiFi).
+- ~150 ms latency, ~12 Mbps on your LAN. Fine for dashboards, chat,
+  documents, video; it won't replace Sidecar for fast motion.
+
+## Parts
+
+| Directory | What it is |
+|-----------|------------|
+| `sender/` | Mac app (Swift, macOS 13+). Virtual display via `CGVirtualDisplay`, ScreenCaptureKit capture, MJPEG over TCP, CGEvent touch injection. |
+| `receiver/` | TouchPad PDK app (C, SDL 1.2 + OpenGL ES 1.1, NEON libjpeg-turbo). |
+| `receiver/PROTOCOL.md` | The tiny wire protocol between them. |
+| `server-test/` | Python reference server for receiver development. |
+| `artwork/` | Icons. |
+| `phase0/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
+
+## Quick start
+
+**TouchPad**: install `receiver/build/org.webosarchive.secondscreen_*.ipk`
+(via `palm-install` or your preferred webOS installer). The app shows a
+waiting screen until a sender appears.
+
+**Mac**: launch **webOS Second Screen.app** (or build it:
+`cd sender && ./package-app.sh`). Grant the Screen Recording and
+Accessibility permissions when prompted, launch again, and the virtual
+display comes up. If the TouchPad is connected over USB, the receiver is
+pointed at your Mac and started automatically; otherwise set the server
+address once on the device:
+
+```sh
+echo "host=<your-mac-ip>" > /media/internal/secondscreen.conf
+```
+
+The receiver reconnects automatically every 2 s, so start/stop order
+never matters.
+
+## Building
+
+- **Mac sender**: `cd sender && swift build -c release` — see
+  [sender/README.md](sender/README.md) (flags, packaging, notarization,
+  design notes).
+- **TouchPad receiver**: cross-compiled with Linaro GCC 4.9.4 + PalmPDK —
+  see [receiver/README.md](receiver/README.md) and
+  [receiver/third_party/README.md](receiver/third_party/README.md) for
+  the vendored NEON libjpeg-turbo build.
+
+## How it works (short version)
+
+The Mac side creates a 1024×768 virtual monitor with the private-but-
+stable `CGVirtualDisplay` API, captures it with ScreenCaptureKit, and
+encodes baseline JPEGs (the TouchPad's PDK apps can't reach the hardware
+H.264 decoder, so MJPEG + NEON libjpeg-turbo is the sweet spot: ~30 ms
+decode + ~5 ms RGB565 GL upload per frame on the Cortex-A8). Frames are
+framed over a single TCP connection with **latest-frame-wins** pacing on
+both ends, so latency stays bounded instead of growing with TCP
+backpressure. The receiver sends touch events back on the same socket;
+the sender maps them into the virtual display's coordinates and injects
+CGEvents. `PLAN.md` has the long version, including all measurements.
+
+## Acknowledgements
+
+- [libjpeg-turbo](https://libjpeg-turbo.org/) (vendored static NEON
+  build for the receiver).
+- The `CGVirtualDisplay` interface shapes follow prior art in
+  [FluffyDisplay](https://github.com/tml1024/FluffyDisplay) and
+  [DeskPad](https://github.com/Stengo/DeskPad).
+- The webOS homebrew community, for keeping these lovely devices alive.

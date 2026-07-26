@@ -1,0 +1,11 @@
+{
+  "id": "org.webosarchive.secondscreen",
+  "version": "0.2.0",
+  "vendor": "webOS Archive",
+  "type": "pdk",
+  "main": "secondscreen",
+  "title": "Second Screen",
+  "icon": "icon.png",
+  "splashIcon": "icon-256.png",
+  "requiredMemory": 80
+}
