@@ -7,6 +7,7 @@ final class StatusUI: NSObject {
     static let shared = StatusUI()
     private var item: NSStatusItem?
     private var stateItem: NSMenuItem?
+    private var updateURL: URL?
     private var started = false
 
     func start() {
@@ -40,6 +41,26 @@ final class StatusUI: NSObject {
         item.menu = menu
         self.item = item
         self.stateItem = state
+    }
+
+    /// Safe from any thread. Adds an "Update Available" item linking to
+    /// the GitHub release page (once; later calls just refresh the URL).
+    func showUpdateAvailable(version: String, url: URL) {
+        guard started else { return }
+        DispatchQueue.main.async {
+            let firstTime = self.updateURL == nil
+            self.updateURL = url
+            guard firstTime, let menu = self.item?.menu else { return }
+            let mi = NSMenuItem(title: "Update Available: \(version)…",
+                                action: #selector(self.openUpdatePage), keyEquivalent: "")
+            mi.target = self
+            // below the connection-state line (title, state, …)
+            menu.insertItem(mi, at: 2)
+        }
+    }
+
+    @objc private func openUpdatePage() {
+        if let url = updateURL { NSWorkspace.shared.open(url) }
     }
 
     @objc private func openDisplaySettings() {

@@ -13,7 +13,9 @@ cd "$(dirname "$0")"
 
 APP_NAME="webOS Second Screen"
 BUNDLE_ID="org.webosarchive.secondscreen.sender"
-VERSION="1.0"
+# single source of truth: the appVersion constant in UpdateCheck.swift
+VERSION="$(sed -n 's/^let appVersion = "\(.*\)"$/\1/p' Sources/secondscreen-sender/UpdateCheck.swift)"
+[[ -n "$VERSION" ]] || { echo "cannot read appVersion from UpdateCheck.swift" >&2; exit 1; }
 ART="../artwork"
 OUT="dist"
 APP="$OUT/$APP_NAME.app"

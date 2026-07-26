@@ -104,6 +104,7 @@ if isatty(1) == 0 {
     setvbuf(stdout, nil, _IONBF, 0)
     log("=== webOS Second Screen starting ===")
 }
+log("sender \(appVersion)")
 
 // --- permissions: preflight, and trigger the system prompts if missing ---
 let screenOK = CGPreflightScreenCaptureAccess()
@@ -213,4 +214,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 StatusUI.shared.start()
 StatusUI.shared.setState("Waiting for TouchPad…")
+checkForUpdate()
 app.run()
