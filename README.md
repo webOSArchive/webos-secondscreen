@@ -24,18 +24,18 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 
 ## Quick start
 
-### Pre-requisites
+### 0. Pre-requisites
 
 - Ensure your TouchPad is in Developer Mode, connected to the same WiFi network, and optionally (but highly recommended) [connected to your Mac via USB with novacom](https://docs.webosarchive.org/appstores/#prepare-your-computer) to enable auto-configuration.
 
-### TouchPad
+### 1. TouchPad
 
 - Install webOS Second Screen from the webOS Archive App Catalog:
 [appcatalog.webosarchive.org/app/webOSSecondScreen](https://appcatalog.webosarchive.org/app/webOSSecondScreen)
 
 - Don't launch the app yet. If connected over USB, the Mac will do it for you after configuring the receiver!
 
-### Mac
+### 2. Mac
 
 - Download the latest [Release](https://github.com/webOSArchive/webos-secondscreen/releases).
 
@@ -57,6 +57,10 @@ Then launch the TouchPad app manually.
 - The receiver reconnects automatically every 2 s, so start/stop order never matters. If your Mac's IP changes, the receiver re-reads the config every minute while disconnected and self-heals. After an hour with no connection it exits on its own so it won't keep the TouchPad's screen on all night.
 
 - The receiver checks the App Catalog for updates at startup and offers to install a newer version via Preware.
+
+### 3. Freedom
+
+- You can disconnect USB once the connection is established -- it works over WiFi. Re-connect if you reconfigure anything on either side, or on the network.
 
 ## Parts
 
