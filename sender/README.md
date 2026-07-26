@@ -9,7 +9,9 @@ framed `J` messages over TCP :5959 with latest-frame-wins. `--mirror`
 falls back to mirroring an existing display (aspect-fit + letterbox).
 
 Receiver `T` touch messages are injected as CGEvent mouse events aimed at
-the captured display's global bounds (finger 0 only; move = position,
+the captured display's global bounds — looked up per event, so
+rearranging the display in System Settings mid-session stays accurate
+(finger 0 only; move = position,
 click strictly on down/up, double-tap → double-click); `K` key messages
 type via `keyboardSetUnicodeString` (printables) or keycode map (arrows,
 return, …).

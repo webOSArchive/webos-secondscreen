@@ -9,7 +9,7 @@ import CoreGraphics
 import Foundation
 
 final class Injector {
-    private let displayFrame: CGRect  // global coords (points, top-left origin)
+    private let displayID: CGDirectDisplayID
     private let contentRect: CGRect   // content within the 1024×768 canvas
     private let src = CGEventSource(stateID: .hidSystemState)
     private let dryRun: Bool
@@ -20,7 +20,7 @@ final class Injector {
     private var clickCount: Int64 = 1
 
     init(displayID: CGDirectDisplayID, contentW: Int, contentH: Int, dryRun: Bool) {
-        displayFrame = CGDisplayBounds(displayID)
+        self.displayID = displayID
         contentRect = CGRect(x: Double(JPEGEncoder.canvasW - contentW) / 2,
                              y: Double(JPEGEncoder.canvasH - contentH) / 2,
                              width: Double(contentW), height: Double(contentH))
@@ -28,6 +28,9 @@ final class Injector {
     }
 
     private func map(_ x: Int, _ y: Int) -> CGPoint {
+        // looked up per event (cheap): the user can rearrange the display
+        // in System Settings mid-session, which moves its global origin
+        let displayFrame = CGDisplayBounds(displayID)
         let fx = min(max((Double(x) - contentRect.minX) / contentRect.width, 0), 1)
         let fy = min(max((Double(y) - contentRect.minY) / contentRect.height, 0), 1)
         // clamp just inside the far edges so events stay on this display
@@ -37,6 +40,7 @@ final class Injector {
 
     func touch(finger: Int, action: Int, x: Int, y: Int) {
         guard finger == 0 else { return }  // finger 0 drives the mouse; gestures are Phase 2
+        guard !CGDisplayBounds(displayID).isEmpty else { return }  // display vanished
         let p = map(x, y)
         switch action {
         case 1:  // move: position only
