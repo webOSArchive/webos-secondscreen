@@ -226,6 +226,32 @@ community release. Icons drawn by user in `artwork/` — 48/64/256/512 px.)
   Finder launch shows an NSAlert that opens the Settings pane.
 - Receiver-side icon/polish work happening in the Linux VM (user).
 
+### Community release 0.2.2 SHIPPED (2026-07-26 night)
+
+Both sides released as **0.2.2**; user published the GitHub release and
+pushed. Update channels are deliberately split:
+
+- **Sender**: GitHub Releases (`webOSArchive/webos-secondscreen`). Startup
+  check in `sender/.../UpdateCheck.swift` hits `releases/latest`, compares
+  tags numerically (`v` prefix ok; pre-releases invisible to that
+  endpoint), and is notify-only — a log line plus an "Update Available"
+  menu-bar item opening the release page. No self-updating.
+- **Receiver**: App Museum II (`receiver/src/updater.c`) — ancient
+  platform, different mechanism. Versions kept in sync BY HAND (user).
+
+`appVersion` in UpdateCheck.swift is the single source of truth;
+package-app.sh reads it for Info.plist (no more hardcoded VERSION).
+Update check verified against a temporary fake 1.0.0 release. Notarization
+credentials are stored (profile "notary") and the full
+`NOTARIZE=1 ./package-app.sh` build→sign→notarize→staple flow works; the
+stapled zip in `sender/dist/` is the release artifact.
+
+Also shipped: touch-offset-after-rearrange fix (01bd215 — Injector now
+reads CGDisplayBounds per event). Lesson from its "regression": the fix
+was committed but the running .app predated it — after committing sender
+changes, rebuild AND reinstall to /Applications (compare binary mtime vs
+commit time before debugging "the fix didn't work").
+
 ## Status (2026-07-25) and immediate next steps
 
 Phase 0 video is DONE and repeatable: real Mac screen mirrored to the
