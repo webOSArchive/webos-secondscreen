@@ -39,7 +39,7 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 
 - Download the latest [Release](https://github.com/webOSArchive/webos-secondscreen/releases).
 
-- Launch **webOS Second Screen.app** (or build it from source: `cd sender && ./package-app.sh`). 
+- Launch **webOS Second Screen.app** (or [build it](#building) from source: `cd sender && ./package-app.sh`). 
 
 - *IMPORTANT:* Grant the Screen Recording and Accessibility permissions when prompted, 
 launch again, and the virtual display comes up. 
