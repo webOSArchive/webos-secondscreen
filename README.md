@@ -20,6 +20,8 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 - ~150 ms latency, ~12 Mbps on your LAN. Fine for dashboards, chat,
   documents, video; it won't replace Sidecar for fast motion.
 
+![app demo](artwork/screenshot1.png)
+
 ## Parts
 
 | Directory | What it is |
