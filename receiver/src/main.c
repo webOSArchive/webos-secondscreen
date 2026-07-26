@@ -18,7 +18,17 @@
 
 #include "net.h"
 #include "decode.h"
+#include "updater.h"
 #include "waiting_jpg.h"   /* generated from assets/waiting.jpg by build.sh */
+#include "update_jpg.h"    /* generated from assets/update.jpg by build.sh */
+
+/* Update-prompt button hit rects — must match assets/make-update-jpg.py */
+#define BTN_Y0   596
+#define BTN_Y1   660
+#define UPD_X0   222
+#define UPD_X1   482
+#define LATER_X0 542
+#define LATER_X1 802
 
 #define APP_ID    "org.webosarchive.secondscreen"
 #define LOG_PATH  "/media/internal/" APP_ID ".log"
@@ -34,6 +44,13 @@
 /* re-arm the power activity well before the previous one lapses */
 #define WAKE_INTERVAL_MS 240000
 #define WAKE_PAYLOAD "{\"id\":\"" APP_ID ".stream\",\"duration_ms\":300000}"
+
+/* Disconnected housekeeping: exit after an hour with no connection (the
+ * wake activity would otherwise keep the display on all night if the Mac
+ * sleeps), and re-read the config file every minute in case the Mac came
+ * back with a new IP (its sender rewrites the conf on launch). */
+#define IDLE_EXIT_MS  (60u * 60u * 1000u)
+#define CONF_POLL_MS  60000u
 
 static GLuint s_tex;
 static GLfloat s_verts[8] = { 0, 0, SCREEN_W, 0, 0, SCREEN_H, SCREEN_W, SCREEN_H };
@@ -157,18 +174,19 @@ static uint8_t *s_rgb;   /* decode target, SCREEN_W*SCREEN_H*2 */
 
 static void set_frame_size(int w, int h);
 
-/* Decode the embedded "Waiting for Connection..." screen onto the
- * texture — same path as a stream frame, so no text/UI code needed. */
-static void show_waiting(void)
+/* Decode an embedded screen (waiting / update prompt) onto the texture —
+ * same path as a stream frame, so no text/UI code needed. */
+static void show_screen(const unsigned char *jpg, unsigned int len)
 {
     int w, h;
-    if (decode_jpeg(waiting_jpg, waiting_jpg_len, s_rgb,
-                    SCREEN_W, SCREEN_H, &w, &h)) {
+    if (decode_jpeg(jpg, len, s_rgb, SCREEN_W, SCREEN_H, &w, &h)) {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
                         GL_RGB, GL_UNSIGNED_SHORT_5_6_5, s_rgb);
         set_frame_size(w, h);
     }
 }
+
+static void show_waiting(void) { show_screen(waiting_jpg, waiting_jpg_len); }
 
 static void set_frame_size(int w, int h)
 {
@@ -187,8 +205,9 @@ int main(int argc, char *argv[])
     SDL_Surface *screen;
     uint8_t *jpg = NULL;
     size_t jpg_cap = 0;
-    int have_frame = 0, running = 1;
+    int have_frame = 0, running = 1, prompt = 0, arg_override = 0;
     Uint32 next_wake = 0, last_draw = 0, fps_t0;
+    Uint32 last_conn, last_conf_poll;
     int fps_frames = 0;
     Uint32 stat_decode = 0, stat_upload = 0, stat_swap = 0;
 
@@ -197,8 +216,17 @@ int main(int argc, char *argv[])
     fprintf(stderr, "secondscreen receiver starting\n");
 
     parse_config(host, sizeof host, &port);
-    if (argc > 1) parse_arg(argv[1], host, sizeof host, &port);
-    fprintf(stderr, "server: %s:%d\n", host, port);
+    {
+        /* an explicit argv target (dev workflow) wins for the whole run:
+         * it disables the config self-heal poll below */
+        char pre_host[128];
+        int pre_port = port;
+        memcpy(pre_host, host, sizeof pre_host);
+        if (argc > 1) parse_arg(argv[1], host, sizeof host, &port);
+        arg_override = strcmp(pre_host, host) != 0 || pre_port != port;
+    }
+    fprintf(stderr, "server: %s:%d%s\n", host, port,
+            arg_override ? " (from argv; config polling off)" : "");
 
     s_rgb = malloc(SCREEN_W * SCREEN_H * 2);
     if (!s_rgb) return 1;
@@ -228,7 +256,9 @@ int main(int argc, char *argv[])
     show_waiting();
 
     net_start(host, port);
+    updater_check_start();   /* App Museum II version check, background */
     fps_t0 = SDL_GetTicks();
+    last_conn = last_conf_poll = fps_t0;
 
     while (running) {
         SDL_Event ev;
@@ -239,12 +269,30 @@ int main(int argc, char *argv[])
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_MOUSEBUTTONDOWN:
+                if (prompt) break;   /* prompt swallows touches */
                 net_send_touch(ev.button.which, 0, ev.button.x, ev.button.y);
                 break;
             case SDL_MOUSEMOTION:
+                if (prompt) break;
                 net_send_touch(ev.motion.which, 1, ev.motion.x, ev.motion.y);
                 break;
             case SDL_MOUSEBUTTONUP:
+                if (prompt) {
+                    int x = ev.button.x, y = ev.button.y;
+                    if (y >= BTN_Y0 && y <= BTN_Y1) {
+                        if (x >= UPD_X0 && x <= UPD_X1) {
+                            if (updater_install()) running = 0;
+                            prompt = 0;
+                        } else if (x >= LATER_X0 && x <= LATER_X1) {
+                            updater_dismiss();
+                            prompt = 0;
+                            show_waiting();   /* next stream frame repaints */
+                            have_frame = 0;
+                            dirty = 1;
+                        }
+                    }
+                    break;
+                }
                 net_send_touch(ev.button.which, 2, ev.button.x, ev.button.y);
                 break;
             case SDL_KEYDOWN:
@@ -268,7 +316,42 @@ int main(int argc, char *argv[])
             next_wake = now + WAKE_INTERVAL_MS;
         }
 
-        len = net_take_frame(&jpg, &jpg_cap);
+        if (net_connected()) {
+            last_conn = now;
+        } else {
+            if (now - last_conn > IDLE_EXIT_MS) {
+                fprintf(stderr, "no connection for an hour, exiting\n");
+                running = 0;
+            }
+            if (!arg_override && now - last_conf_poll > CONF_POLL_MS) {
+                /* self-heal: the sender rewrites the conf with its IP on
+                 * launch; pick it up without a receiver restart */
+                char nh[128];
+                int np = port;
+                memcpy(nh, host, sizeof nh);
+                parse_config(nh, sizeof nh, &np);
+                if (strcmp(nh, host) != 0 || np != port) {
+                    fprintf(stderr, "config changed: %s:%d -> %s:%d\n",
+                            host, port, nh, np);
+                    memcpy(host, nh, sizeof host);
+                    port = np;
+                    net_set_target(host, port);
+                }
+                last_conf_poll = now;
+            }
+        }
+
+        if (!prompt && updater_has_update()) {
+            fprintf(stderr, "showing update prompt (version %s)\n",
+                    updater_get_version());
+            prompt = 1;
+            show_screen(update_jpg, update_jpg_len);
+            dirty = 1;
+        }
+
+        /* while the prompt is up, leave frames in the net mailbox
+         * (latest-wins: no backlog) so it isn't painted over */
+        len = prompt ? 0 : net_take_frame(&jpg, &jpg_cap);
         if (len > 0) {
             int w, h;
             Uint32 t0 = SDL_GetTicks(), t1;
@@ -295,7 +378,7 @@ int main(int argc, char *argv[])
 
         /* a dead connection means the last stream frame is stale —
          * fall back to the embedded waiting screen */
-        if (have_frame && !net_connected()) {
+        if (!prompt && have_frame && !net_connected()) {
             show_waiting();
             have_frame = 0;
             dirty = 1;

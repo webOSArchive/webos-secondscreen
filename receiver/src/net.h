@@ -8,6 +8,11 @@ void net_start(const char *host, int port);
 void net_stop(void);
 int  net_connected(void);
 
+/* Retarget the client (e.g. the config file changed while disconnected).
+ * Takes effect on the reconnect loop's next dial attempt; an established
+ * connection is left alone. */
+void net_set_target(const char *host, int port);
+
 /* Latest-frame-wins hand-off: if a JPEG newer than the last take is
  * pending, swaps it into *buf (caller's old buffer is recycled as the
  * network thread's next slot) and returns its length; else returns 0.

@@ -18,6 +18,9 @@
 
 #define PROTO_VERSION 1
 
+/* dial target — s_target_mx guarded: the main thread may retarget it
+ * (config self-heal) while the net thread is between dial attempts */
+static pthread_mutex_t s_target_mx = PTHREAD_MUTEX_INITIALIZER;
 static char s_host[128];
 static int  s_port;
 
@@ -77,7 +80,7 @@ static void send_hello(void)
     send_msg('H', p, 5);
 }
 
-static int dial(void)
+static int dial(const char *host, int port)
 {
     struct addrinfo hints, *res = NULL, *ai;
     char portstr[16];
@@ -86,8 +89,8 @@ static int dial(void)
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    snprintf(portstr, sizeof portstr, "%d", s_port);
-    if (getaddrinfo(s_host, portstr, &hints, &res) != 0)
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0)
         return -1;
     for (ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -110,13 +113,21 @@ static void *net_thread(void *arg)
     (void)arg;
 
     while (s_run) {
-        int fd = dial();
+        char host[128];
+        int port, fd;
+
+        pthread_mutex_lock(&s_target_mx);
+        memcpy(host, s_host, sizeof host);
+        port = s_port;
+        pthread_mutex_unlock(&s_target_mx);
+
+        fd = dial(host, port);
         if (fd < 0) {
-            fprintf(stderr, "net: connect %s:%d failed, retrying\n", s_host, s_port);
+            fprintf(stderr, "net: connect %s:%d failed, retrying\n", host, port);
             usleep(RETRY_MS * 1000);
             continue;
         }
-        fprintf(stderr, "net: connected to %s:%d\n", s_host, s_port);
+        fprintf(stderr, "net: connected to %s:%d\n", host, port);
         pthread_mutex_lock(&s_send_mx);
         s_fd = fd;
         pthread_mutex_unlock(&s_send_mx);
@@ -164,11 +175,18 @@ static void *net_thread(void *arg)
     return NULL;
 }
 
-void net_start(const char *host, int port)
+void net_set_target(const char *host, int port)
 {
+    pthread_mutex_lock(&s_target_mx);
     strncpy(s_host, host, sizeof s_host - 1);
     s_host[sizeof s_host - 1] = 0;
     s_port = port;
+    pthread_mutex_unlock(&s_target_mx);
+}
+
+void net_start(const char *host, int port)
+{
+    net_set_target(host, port);
     s_run = 1;
     pthread_create(&s_thread, NULL, net_thread, NULL);
 }

@@ -54,7 +54,9 @@ echo "host=<your-mac-ip>" > /media/internal/secondscreen.conf
 
 Then launch the TouchPad app manually.
 
-- The receiver reconnects automatically every 2 s, so start/stop order never matters.
+- The receiver reconnects automatically every 2 s, so start/stop order never matters. If your Mac's IP changes, the receiver re-reads the config every minute while disconnected and self-heals. After an hour with no connection it exits on its own so it won't keep the TouchPad's screen on all night.
+
+- The receiver checks the App Catalog for updates at startup and offers to install a newer version via Preware.
 
 ## Parts
 
