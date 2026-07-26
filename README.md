@@ -27,7 +27,7 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 Ensure your TouchPad is in Developer Mode, connected to the same WiFi network, and optionally (but recommended) [connected to your Mac via USB with novacom](https://docs.webosarchive.org/appstores/#prepare-your-computer) to enable auto-configuration.
 
 **TouchPad**: install webOS Second Screen from the webOS Archive App Catalog:
-[https://appcatalog.webosarchive.org/app/webOSSecondScreen](appcatalog.webosarchive.org/app/webOSSecondScreen)
+[appcatalog.webosarchive.org/app/webOSSecondScreen](https://appcatalog.webosarchive.org/app/webOSSecondScreen)
 
 The app shows a waiting screen until a sender appears.
 
