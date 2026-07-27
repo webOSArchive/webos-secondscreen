@@ -202,10 +202,12 @@ community release. Icons drawn by user in `artwork/` — 48/64/256/512 px.)
 ### Distribution prep DONE (2026-07-26 evening, Mac side)
 
 - **USB auto-launch**: sender startup checks `novacom -l`; if a TouchPad
-  is on USB it ALWAYS rewrites secondscreen.conf with the sender's
-  current IP (the receiver binary hard-codes the dev VM as its default
-  host — Linux-side report 2026-07-26 evening — so the conf override is
-  the mechanism that points fresh installs at the right machine), then
+  is on USB it refreshes the `host=`/`port=` lines in secondscreen.conf
+  with the sender's current IP — since 0.2.3 via grep-filter + append +
+  mv, preserving hand-set keys like `saver_secs=`/`idle_secs=` (the
+  receiver binary hard-codes the dev VM as its default host — Linux-side
+  report 2026-07-26 evening — so the conf override is the mechanism that
+  points fresh installs at the right machine), then
   launches the receiver only if not running (`killall -0` probe).
   Running receivers are never restarted (dev sessions); they read the
   refreshed conf on next launch.
@@ -280,6 +282,19 @@ Verified on-device with a silent accept-then-hang server + 30/90 s conf:
 connect → 10 s drop → saver on → exit, process gone. Awaiting an
 overnight run at default timing before release (would be receiver 0.2.3;
 museum versions synced by hand).
+
+### Sender 0.2.3 built + notarized (2026-07-27, not yet published)
+
+Sender-side companion to the receiver's conf-overridable timeouts: the
+USB auto-launch conf write is now selective (preserves `saver_secs=` /
+`idle_secs=` / future keys; only `host=`/`port=` are rewritten), and the
+startup hint + READMEs teach the same preserve-keys one-liner. Verified
+live against the TouchPad: custom conf keys survived an auto-launch pass.
+Committed as 6b63de3; `NOTARIZE=1 package-app.sh` run complete (Accepted,
+stapled) — release artifact is `sender/dist/webOS Second Screen.zip`.
+Remaining: publish the GitHub release (tag v0.2.3, upload the zip) —
+UpdateCheck on 0.2.2 installs will then surface it. Receiver 0.2.3 can
+ship alongside once the overnight idle-exit run passes.
 
 ## Status (2026-07-25) and immediate next steps
 
