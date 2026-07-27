@@ -73,7 +73,7 @@ Then launch the TouchPad app manually.
 | `receiver/PROTOCOL.md` | The tiny wire protocol between them. |
 | `server-test/` | Python reference server for receiver development. |
 | `artwork/` | Icons. |
-| `phase0/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
+| `experiments/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
 
 ## Building
 

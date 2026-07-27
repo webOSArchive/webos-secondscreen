@@ -43,7 +43,7 @@ TouchPad client, with touch → mouse (and later keyboard) sent back.
   ~1s from connection to first picture. Encode at 20 fps for drift-free
   playback. Latency drifts if encode fps exceeds decode ceiling — no
   frame dropping in this path; confirms Phase 1's MJPEG latest-frame-wins
-  design. Scripts in `phase0/`; `touchpad-play.sh` is the working recipe.
+  design. Scripts in `experiments/`; `touchpad-play.sh` is the working recipe.
   Audio: on-device ffmpeg ALSA output (`-f alsa default`) WORKS despite
   PulseAudio (confirmed audible tone test). A/V plan: mux AAC into the
   mpegts on the Mac (system audio captured via BlackHole 2ch), split
@@ -313,8 +313,8 @@ so it stays in sync with the mirrored video.
       Device player ran without errors; server held exactly 1.0x for
       17+ min. Audio *audibility* on the TouchPad speakers NOT yet
       human-confirmed (user was remote; camera check inconclusive).
-- [ ] **NEXT (user back in room):** rerun `phase0/stream-screen-av.sh` +
-      `phase0/touchpad-play-av.sh "" 600`, confirm audio is audible,
+- [ ] **NEXT (user back in room):** rerun `experiments/stream-screen-av.sh` +
+      `experiments/touchpad-play-av.sh "" 600`, confirm audio is audible,
       then play real video content and judge A/V sync over ~10 min.
       If audio drifts: try `-af aresample=async=1` on the device side.
       REMEMBER: Mac sound output must be "BlackHole 2ch" while testing;
@@ -347,7 +347,7 @@ When picking this up:
    novaterm isn't needed to launch with a URL.
 3. Rebuild the app (not ffmpeg/libVLC — only the Qt app layer changed),
    repackage the IPK, `palm-install`, and test with
-   `phase0/stream-screen-av-http.sh` on this Mac (HTTP pull; on-device
+   `experiments/stream-screen-av-http.sh` on this Mac (HTTP pull; on-device
    feeder ffmpeg confirmed the device parses the full A/V mpegts —
    H.264 1024×666@15 + MP2 44.1k stereo — over HTTP).
 
@@ -415,14 +415,14 @@ When picking this up:
 Mac LAN IP: `192.168.10.37`. Stream URL for VLC: `http://192.168.10.37:8080/tp.ts`
 
 1. Connect the TouchPad over USB; verify with `novacom -l`.
-2. `phase0/inspect-vlc.sh` — find the VLC port's app id + appinfo.json
+2. `experiments/inspect-vlc.sh` — find the VLC port's app id + appinfo.json
    (binary name, whether it takes a URL launch param).
-3. `phase0/stream-test.sh` — serve a synthetic 1024×768 test pattern
+3. `experiments/stream-test.sh` — serve a synthetic 1024×768 test pattern
    (validates decode without screen-capture permissions).
-4. `phase0/launch-vlc.sh <app-id> [url]` — launch VLC on-device with the
+4. `experiments/launch-vlc.sh <app-id> [url]` — launch VLC on-device with the
    stream URL via `luna-send` application manager (PDK apps get params as
    argv JSON).
-5. `phase0/stream-screen.sh` — stream the real Mac screen ("Capture
+5. `experiments/stream-screen.sh` — stream the real Mac screen ("Capture
    screen 0" = avfoundation device index 2). Requires Screen Recording
    permission for the terminal app (grant + relaunch).
 
