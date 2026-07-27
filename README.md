@@ -49,7 +49,9 @@ launch again, and the virtual display comes up.
 - If you cannot connect via USB, you must set the the server (that is, the Mac sender) address once on the device:
 
 ```sh
-echo "host=<your-mac-ip>" > /media/internal/secondscreen.conf
+grep -v '^host=' /media/internal/secondscreen.conf 2>/dev/null > /tmp/ss.conf
+echo "host=<your-mac-ip>" >> /tmp/ss.conf
+mv /tmp/ss.conf /media/internal/secondscreen.conf
 ```
 
 Then launch the TouchPad app manually.

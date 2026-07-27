@@ -29,10 +29,12 @@ Flags: `--port`, `--fps` (default 25), `--quality` (0–1, default 0.6),
 `--check-permissions`.
 
 On startup the sender checks for a USB-connected TouchPad via novacom.
-If found, it always rewrites `/media/internal/secondscreen.conf` with
-this Mac's current IP (the receiver binary's built-in default points at
-the dev VM, so the conf override is what makes fresh installs dial the
-right machine), then launches the receiver if it isn't already running —
+If found, it refreshes the `host=`/`port=` lines in
+`/media/internal/secondscreen.conf` with this Mac's current IP (the
+receiver binary's built-in default points at the dev VM, so the conf
+override is what makes fresh installs dial the right machine) while
+preserving any other keys you've added by hand (`saver_secs=`,
+`idle_secs=`, …), then launches the receiver if it isn't already running —
 plug in the cable, open the app, done. A running receiver is never
 restarted (it may be a dev session); it picks up the new conf on its
 next launch.
@@ -64,7 +66,9 @@ the right Settings pane.
 Point the TouchPad at this Mac (also printed at startup):
 
 ```sh
-echo 'echo "host=<mac-ip>" > /media/internal/secondscreen.conf;
+echo 'grep -v "^host=" /media/internal/secondscreen.conf 2>/dev/null > /tmp/ss.conf;
+echo "host=<mac-ip>" >> /tmp/ss.conf;
+mv /tmp/ss.conf /media/internal/secondscreen.conf;
 killall secondscreen; sleep 2;
 cd /media/cryptofs/apps/usr/palm/applications/org.webosarchive.secondscreen && ./secondscreen &' \
   | novacom run file:///bin/sh

@@ -64,11 +64,15 @@ func autolaunchReceiver(hostIP: String?, port: UInt16) {
     // conf dials the wrong machine. A receiver that is already running is
     // not restarted (it may be a dev session); it reads the new conf on
     // its next launch.
+    // Rewrite only host=/port=, preserving any other keys the user has
+    // added by hand (saver_secs=, idle_secs=, future settings).
     var conf = ""
     if let ip = hostIP {
         conf = """
-        echo "host=\(ip)" > /media/internal/secondscreen.conf
-        echo "port=\(port)" >> /media/internal/secondscreen.conf
+        grep -v '^host=' /media/internal/secondscreen.conf 2>/dev/null | grep -v '^port=' > /tmp/ss.conf
+        echo "host=\(ip)" >> /tmp/ss.conf
+        echo "port=\(port)" >> /tmp/ss.conf
+        mv /tmp/ss.conf /media/internal/secondscreen.conf
         echo "conf -> \(ip):\(port)"
         """
     }

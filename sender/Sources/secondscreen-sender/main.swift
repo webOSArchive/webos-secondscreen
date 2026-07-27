@@ -174,7 +174,7 @@ if !axOK {
 
 let ips = lanAddresses().filter { $0.hasPrefix("192.168.") || $0.hasPrefix("10.") || $0.hasPrefix("172.") }
 if let ip = ips.first {
-    print("point the TouchPad here:  echo \"host=\(ip)\" > /media/internal/secondscreen.conf")
+    print("point the TouchPad here:  grep -v '^host=' /media/internal/secondscreen.conf 2>/dev/null > /tmp/ss.conf; echo \"host=\(ip)\" >> /tmp/ss.conf; mv /tmp/ss.conf /media/internal/secondscreen.conf")
     if ips.count > 1 { print("(all LAN addresses: \(ips.joined(separator: ", ")))") }
 }
 
