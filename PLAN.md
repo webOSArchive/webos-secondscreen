@@ -292,9 +292,10 @@ startup hint + READMEs teach the same preserve-keys one-liner. Verified
 live against the TouchPad: custom conf keys survived an auto-launch pass.
 Committed as 6b63de3; `NOTARIZE=1 package-app.sh` run complete (Accepted,
 stapled) — release artifact is `sender/dist/webOS Second Screen.zip`.
-Remaining: publish the GitHub release (tag v0.2.3, upload the zip) —
-UpdateCheck on 0.2.2 installs will then surface it. Receiver 0.2.3 can
-ship alongside once the overnight idle-exit run passes.
+PUBLISHED 2026-07-27: sender 0.2.3 on GitHub Releases and receiver 0.2.3
+on App Museum II (user). Project is at rest — no open work; next session
+starts from new bug reports or demand for the v2 backlog (keyboard,
+audio, scroll/right-click, etc. — see polish backlog above).
 
 ## Status (2026-07-25) and immediate next steps
 
