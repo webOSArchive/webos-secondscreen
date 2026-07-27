@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -15,6 +16,11 @@
 
 #define MAX_PAYLOAD (8u * 1024u * 1024u)
 #define RETRY_MS 2000
+
+/* The server sends something at least every 3s ('P' ping when the screen
+ * is static). A sleeping Mac leaves the TCP link half-open — no FIN, no
+ * RST, recv blocks forever — so silence is the only dead-peer signal. */
+#define RECV_TIMEOUT_S 10
 
 #define PROTO_VERSION 1
 
@@ -44,6 +50,9 @@ static int read_full(int fd, void *p, size_t n)
         ssize_t r = recv(fd, b, n, 0);
         if (r <= 0) {
             if (r < 0 && errno == EINTR) continue;
+            if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                fprintf(stderr, "net: no traffic for %ds, assuming dead link\n",
+                        RECV_TIMEOUT_S);
             return -1;
         }
         b += r; n -= (size_t)r;
@@ -101,7 +110,10 @@ static int dial(const char *host, int port)
     freeaddrinfo(res);
     if (fd >= 0) {
         int one = 1;
+        struct timeval tv;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        tv.tv_sec = RECV_TIMEOUT_S; tv.tv_usec = 0;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     }
     return fd;
 }

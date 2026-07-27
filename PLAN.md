@@ -252,6 +252,35 @@ was committed but the running .app predated it — after committing sender
 changes, rebuild AND reinstall to /Applications (compare binary mtime vs
 commit time before debugging "the fix didn't work").
 
+### Receiver: idle-exit fix + screensaver (2026-07-27, unreleased)
+
+The one-hour idle exit never fired overnight — NOT a kill/exit problem.
+A sleeping Mac leaves TCP half-open (no FIN/RST), the receiver's `recv`
+blocked forever, `net_connected()` stayed true, so the timer never
+started counting (log evidence: no `net: disconnected` line all night).
+Lesson: on this path silence is the only dead-peer signal.
+
+- **Dead-peer detection** (`net.c`): 10 s `SO_RCVTIMEO` on the stream
+  socket; sender guarantees a frame or `P` ping every 3 s (now a
+  liveness rule in PROTOCOL.md). Timeout flows into the normal
+  disconnect path: waiting screen → screensaver → idle exit.
+- **Screensaver**: DVD-style bouncing icon on black after 15 min
+  disconnected. Sprite `assets/saver-icon.jpg` (make-saver-icon.py,
+  128×128, must match `SAVER_ICON_*`) parked in the texture strip below
+  row 768. Touch wakes it and resets the idle clock; reconnect or the
+  update prompt also ends it.
+- **Conf-overridable timeouts**: `saver_secs=` (900) / `idle_secs=`
+  (3600) in secondscreen.conf — testing doesn't have to wait an hour.
+- GL lesson: a sprite windowed out of a shared texture needs a 1-texel
+  guard band — `GL_LINEAR` at the window edge samples the neighboring
+  texels (stale frame rows / never-uploaded garbage), visible as a
+  flickering border at fractional positions.
+
+Verified on-device with a silent accept-then-hang server + 30/90 s conf:
+connect → 10 s drop → saver on → exit, process gone. Awaiting an
+overnight run at default timing before release (would be receiver 0.2.3;
+museum versions synced by hand).
+
 ## Status (2026-07-25) and immediate next steps
 
 Phase 0 video is DONE and repeatable: real Mac screen mirrored to the

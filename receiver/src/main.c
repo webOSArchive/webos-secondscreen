@@ -19,8 +19,9 @@
 #include "net.h"
 #include "decode.h"
 #include "updater.h"
-#include "waiting_jpg.h"   /* generated from assets/waiting.jpg by build.sh */
-#include "update_jpg.h"    /* generated from assets/update.jpg by build.sh */
+#include "waiting_jpg.h"     /* generated from assets/waiting.jpg by build.sh */
+#include "update_jpg.h"      /* generated from assets/update.jpg by build.sh */
+#include "saver_icon_jpg.h"  /* generated from assets/saver-icon.jpg by build.sh */
 
 /* Update-prompt button hit rects — must match assets/make-update-jpg.py */
 #define BTN_Y0   596
@@ -48,13 +49,28 @@
 /* Disconnected housekeeping: exit after an hour with no connection (the
  * wake activity would otherwise keep the display on all night if the Mac
  * sleeps), and re-read the config file every minute in case the Mac came
- * back with a new IP (its sender rewrites the conf on launch). */
+ * back with a new IP (its sender rewrites the conf on launch).
+ * Both timeouts can be overridden in the conf file (idle_secs= /
+ * saver_secs=) — mostly so tests don't have to wait an hour. */
 #define IDLE_EXIT_MS  (60u * 60u * 1000u)
 #define CONF_POLL_MS  60000u
+
+/* Screensaver: bounce the app icon on black after this long without a
+ * connection (touch wakes it and resets the idle-exit clock) */
+#define SAVER_MS      (15u * 60u * 1000u)
+#define SAVER_ICON_W  128    /* must match assets/make-saver-icon.py */
+#define SAVER_ICON_H  128
+#define SAVER_TEX_Y   768    /* icon parked in the texture strip frames never touch */
+#define SAVER_SPEED   90.0f  /* px/s */
+#define SAVER_TICK_MS 33     /* ~30 fps animation */
 
 static GLuint s_tex;
 static GLfloat s_verts[8] = { 0, 0, SCREEN_W, 0, 0, SCREEN_H, SCREEN_W, SCREEN_H };
 static GLfloat s_texco[8];
+
+/* disconnect housekeeping timeouts; conf-file overridable (main thread only) */
+static Uint32 s_idle_exit_ms = IDLE_EXIT_MS;
+static Uint32 s_saver_ms = SAVER_MS;
 
 /* Launcher-launched PDK apps get no terminal and no /var/log/messages —
  * a log file on /media/internal is the only way to see anything. */
@@ -84,6 +100,12 @@ static void parse_config(char *host, size_t hostlen, int *port)
         } else if (strncmp(line, "port=", 5) == 0) {
             int p = atoi(line + 5);
             if (p > 0) *port = p;
+        } else if (strncmp(line, "idle_secs=", 10) == 0) {
+            long v = atol(line + 10);
+            if (v > 0) s_idle_exit_ms = (Uint32)v * 1000u;
+        } else if (strncmp(line, "saver_secs=", 11) == 0) {
+            long v = atol(line + 11);
+            if (v > 0) s_saver_ms = (Uint32)v * 1000u;
         }
     }
     fclose(f);
@@ -151,6 +173,7 @@ static void gl_setup(void)
     glDisable(GL_BLEND);
     glEnable(GL_TEXTURE_2D);
     glColor4f(1, 1, 1, 1);
+    glClearColor(0, 0, 0, 1);
 
     glGenTextures(1, &s_tex);
     glBindTexture(GL_TEXTURE_2D, s_tex);
@@ -188,14 +211,53 @@ static void show_screen(const unsigned char *jpg, unsigned int len)
 
 static void show_waiting(void) { show_screen(waiting_jpg, waiting_jpg_len); }
 
+static void set_quad(GLfloat x0, GLfloat y0, GLfloat x1, GLfloat y1)
+{
+    s_verts[0] = x0; s_verts[1] = y0;
+    s_verts[2] = x1; s_verts[3] = y0;
+    s_verts[4] = x0; s_verts[5] = y1;
+    s_verts[6] = x1; s_verts[7] = y1;
+}
+
+static void set_texwin(GLfloat u0, GLfloat v0, GLfloat u1, GLfloat v1)
+{
+    s_texco[0] = u0; s_texco[1] = v0;
+    s_texco[2] = u1; s_texco[3] = v0;
+    s_texco[4] = u0; s_texco[5] = v1;
+    s_texco[6] = u1; s_texco[7] = v1;
+}
+
+/* fullscreen quad showing the current frame (also undoes the saver's
+ * icon-sized quad — every screen/frame repaint goes through here) */
 static void set_frame_size(int w, int h)
 {
-    GLfloat u = (GLfloat)w / TEX_W;
-    GLfloat v = (GLfloat)h / TEX_H;
-    s_texco[0] = 0; s_texco[1] = 0;
-    s_texco[2] = u; s_texco[3] = 0;
-    s_texco[4] = 0; s_texco[5] = v;
-    s_texco[6] = u; s_texco[7] = v;
+    set_quad(0, 0, SCREEN_W, SCREEN_H);
+    set_texwin(0, 0, (GLfloat)w / TEX_W, (GLfloat)h / TEX_H);
+}
+
+/* One-time upload of the saver sprite into the unused strip below the
+ * frame area. Returns 1 if the saver is usable.
+ *
+ * The sprite gets a 1-texel black guard band: GL_LINEAR sampling at the
+ * window edge blends in the neighboring texels (stale frame rows above,
+ * never-uploaded garbage right/below), which flickers as a thin border
+ * while the icon moves through fractional positions. */
+static int saver_load_icon(void)
+{
+    int w, h;
+    memset(s_rgb, 0, (SAVER_ICON_W + 2) * (SAVER_ICON_H + 2) * 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, SAVER_TEX_Y,
+                    SAVER_ICON_W + 2, SAVER_ICON_H + 2,
+                    GL_RGB, GL_UNSIGNED_SHORT_5_6_5, s_rgb);
+    if (!decode_jpeg(saver_icon_jpg, saver_icon_jpg_len, s_rgb,
+                     SCREEN_W, SCREEN_H, &w, &h) ||
+        w != SAVER_ICON_W || h != SAVER_ICON_H) {
+        fprintf(stderr, "saver: icon decode failed (%dx%d), saver disabled\n", w, h);
+        return 0;
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 1, SAVER_TEX_Y + 1, w, h,
+                    GL_RGB, GL_UNSIGNED_SHORT_5_6_5, s_rgb);
+    return 1;
 }
 
 int main(int argc, char *argv[])
@@ -206,6 +268,9 @@ int main(int argc, char *argv[])
     uint8_t *jpg = NULL;
     size_t jpg_cap = 0;
     int have_frame = 0, running = 1, prompt = 0, arg_override = 0;
+    int saver = 0, saver_ok = 0;
+    GLfloat sav_x = 0, sav_y = 0, sav_vx = 0, sav_vy = 0;
+    Uint32 last_anim = 0;
     Uint32 next_wake = 0, last_draw = 0, fps_t0;
     Uint32 last_conn, last_conf_poll;
     int fps_frames = 0;
@@ -227,6 +292,8 @@ int main(int argc, char *argv[])
     }
     fprintf(stderr, "server: %s:%d%s\n", host, port,
             arg_override ? " (from argv; config polling off)" : "");
+    fprintf(stderr, "timeouts: saver %us, idle exit %us\n",
+            s_saver_ms / 1000u, s_idle_exit_ms / 1000u);
 
     s_rgb = malloc(SCREEN_W * SCREEN_H * 2);
     if (!s_rgb) return 1;
@@ -253,6 +320,7 @@ int main(int argc, char *argv[])
     fprintf(stderr, "video mode: %dx%d\n", screen->w, screen->h);
     SDL_ShowCursor(SDL_DISABLE);
     gl_setup();
+    saver_ok = saver_load_icon();
     show_waiting();
 
     net_start(host, port);
@@ -269,14 +337,25 @@ int main(int argc, char *argv[])
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_MOUSEBUTTONDOWN:
+                if (saver) {
+                    /* touch wakes the saver and counts as activity for
+                     * the idle-exit clock */
+                    fprintf(stderr, "screensaver off (touch)\n");
+                    saver = 0;
+                    show_waiting();
+                    last_conn = SDL_GetTicks();
+                    dirty = 1;
+                    break;
+                }
                 if (prompt) break;   /* prompt swallows touches */
                 net_send_touch(ev.button.which, 0, ev.button.x, ev.button.y);
                 break;
             case SDL_MOUSEMOTION:
-                if (prompt) break;
+                if (saver || prompt) break;
                 net_send_touch(ev.motion.which, 1, ev.motion.x, ev.motion.y);
                 break;
             case SDL_MOUSEBUTTONUP:
+                if (saver) break;
                 if (prompt) {
                     int x = ev.button.x, y = ev.button.y;
                     if (y >= BTN_Y0 && y <= BTN_Y1) {
@@ -317,11 +396,28 @@ int main(int argc, char *argv[])
         }
 
         if (net_connected()) {
+            if (saver) {
+                fprintf(stderr, "screensaver off (reconnected)\n");
+                saver = 0;
+                show_waiting();   /* next stream frame repaints */
+                dirty = 1;
+            }
             last_conn = now;
         } else {
-            if (now - last_conn > IDLE_EXIT_MS) {
-                fprintf(stderr, "no connection for an hour, exiting\n");
+            if (now - last_conn > s_idle_exit_ms) {
+                fprintf(stderr, "no connection for %us, exiting\n",
+                        s_idle_exit_ms / 1000u);
                 running = 0;
+            }
+            if (!saver && !prompt && saver_ok && now - last_conn > s_saver_ms) {
+                fprintf(stderr, "screensaver on\n");
+                saver = 1;
+                sav_x = (SCREEN_W - SAVER_ICON_W) / 2.0f;
+                sav_y = (SCREEN_H - SAVER_ICON_H) / 2.0f;
+                sav_vx = SAVER_SPEED;
+                sav_vy = SAVER_SPEED * 0.75f;
+                last_anim = now;
+                dirty = 1;
             }
             if (!arg_override && now - last_conf_poll > CONF_POLL_MS) {
                 /* self-heal: the sender rewrites the conf with its IP on
@@ -345,6 +441,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "showing update prompt (version %s)\n",
                     updater_get_version());
             prompt = 1;
+            saver = 0;   /* prompt takes the screen */
             show_screen(update_jpg, update_jpg_len);
             dirty = 1;
         }
@@ -363,6 +460,7 @@ int main(int argc, char *argv[])
                 stat_upload += SDL_GetTicks() - t1;
                 set_frame_size(w, h);
                 have_frame = 1;
+                saver = 0;   /* connection came back within this iteration */
                 dirty = 1;
                 if (++fps_frames == 100) {
                     Uint32 dt = SDL_GetTicks() - fps_t0;
@@ -384,8 +482,31 @@ int main(int argc, char *argv[])
             dirty = 1;
         }
 
+        if (saver && now - last_anim >= SAVER_TICK_MS) {
+            GLfloat dt = (now - last_anim) / 1000.0f;
+            if (dt > 0.25f) dt = 0.25f;   /* clamp after a stall */
+            sav_x += sav_vx * dt;
+            sav_y += sav_vy * dt;
+            if (sav_x < 0)                        { sav_x = 0; sav_vx = -sav_vx; }
+            if (sav_x > SCREEN_W - SAVER_ICON_W)  { sav_x = SCREEN_W - SAVER_ICON_W; sav_vx = -sav_vx; }
+            if (sav_y < 0)                        { sav_y = 0; sav_vy = -sav_vy; }
+            if (sav_y > SCREEN_H - SAVER_ICON_H)  { sav_y = SCREEN_H - SAVER_ICON_H; sav_vy = -sav_vy; }
+            last_anim = now;
+            dirty = 1;
+        }
+
         /* redraw on new frame, else at ~5 Hz keepalive */
         if (dirty || now - last_draw > 200) {
+            if (saver) {
+                glClear(GL_COLOR_BUFFER_BIT);
+                set_quad(sav_x, sav_y,
+                         sav_x + SAVER_ICON_W, sav_y + SAVER_ICON_H);
+                /* +1: skip the guard band row/column */
+                set_texwin((GLfloat)1 / TEX_W,
+                           (GLfloat)(SAVER_TEX_Y + 1) / TEX_H,
+                           (GLfloat)(1 + SAVER_ICON_W) / TEX_W,
+                           (GLfloat)(SAVER_TEX_Y + 1 + SAVER_ICON_H) / TEX_H);
+            }
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             {
                 Uint32 ts = SDL_GetTicks();

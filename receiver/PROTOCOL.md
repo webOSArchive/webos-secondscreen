@@ -24,6 +24,12 @@ offset  size  field
 The server should apply **latest-frame-wins** on send: keep a 1-slot queue
 and drop stale frames rather than letting TCP backpressure grow latency.
 
+**Liveness:** the server must send *something* at least every 3 s — a
+frame, or a `P` ping when the screen is static. The client drops the
+link after 10 s of silence (a sleeping server leaves TCP half-open with
+no FIN/RST, so silence is the only dead-peer signal) and falls back to
+its reconnect loop.
+
 ## Client → server
 
 | type | payload | meaning |

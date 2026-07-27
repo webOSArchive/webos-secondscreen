@@ -29,6 +29,7 @@ LIBS="-lSDL -lpdl -lGLES_CM $TURBO/libjpeg.a -lpthread -lm"
 mkdir -p build
 xxd -i -n waiting_jpg assets/waiting.jpg > build/waiting_jpg.h
 xxd -i -n update_jpg assets/update.jpg > build/update_jpg.h
+xxd -i -n saver_icon_jpg assets/saver-icon.jpg > build/saver_icon_jpg.h
 $CC $CFLAGS -Ibuild src/main.c src/net.c src/decode.c src/updater.c src/glibc_compat.c -o build/secondscreen $LDFLAGS $LIBS
 "$TC/arm-linux-gnueabi-strip" build/secondscreen
 
