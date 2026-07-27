@@ -99,7 +99,7 @@ Key findings (receiver bring-up, 2026-07-26):
   `novacom put file:///media/cryptofs/apps/.../secondscreen` + chmod +x,
   relaunch. (novacom put fails with 'file open failed' if the app is
   still running — kill first, wait ~2 s.)
-- Receiver logs to `/media/internal/com.webosarchive.secondscreen.log`; test
+- Receiver logs to `/media/internal/org.webosarchive.secondscreen.log`; test
   server is `server-test/serve.py` (port 5959, `--x11` to mirror the VM
   display, latest-frame-wins mailbox sender). Protocol in
   `receiver/PROTOCOL.md`.
@@ -214,7 +214,7 @@ community release. Icons drawn by user in `artwork/` — 48/64/256/512 px.)
   Linux VM holds the USB passthrough, novacom on the Mac sees nothing —
   expected, not a bug.
 - **App bundle**: `sender/package-app.sh` → signed
-  `dist/webOS Second Screen.app` (Developer ID: webOS Archive
+  `dist/webOS Second Screen.app` (Developer ID cert, team
   Z97JEYX9UJ, hardened runtime, icns from artwork/, LSUIElement
   menu-bar app with state + Arrange Displays… + Quit). Finder launches
   log to ~/Library/Logs/webOSSecondScreen.log. Notarize with
@@ -310,7 +310,7 @@ so it stays in sync with the mirrored video.
 
 The vlc-qt build environment lives in a **Linux VM on the other (Intel)
 Mac** at `~/Projects/vlc-qt` (the on-device ffmpeg 2.8.22 was built there:
-prefix `$HOME/Projects/vlc-qt/webos/vlc-arm`, Linaro GCC 4.9.4).
+prefix `~/Projects/vlc-qt/webos/vlc-arm`, Linaro GCC 4.9.4).
 When picking this up:
 
 1. **Network MRL fix (the essential one).** In the player app's
