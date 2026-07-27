@@ -246,7 +246,7 @@ credentials are stored (profile "notary") and the full
 `NOTARIZE=1 ./package-app.sh` build→sign→notarize→staple flow works; the
 stapled zip in `sender/dist/` is the release artifact.
 
-Also shipped: touch-offset-after-rearrange fix (01bd215 — Injector now
+Also shipped: touch-offset-after-rearrange fix (d2045d1 — Injector now
 reads CGDisplayBounds per event). Lesson from its "regression": the fix
 was committed but the running .app predated it — after committing sender
 changes, rebuild AND reinstall to /Applications (compare binary mtime vs
