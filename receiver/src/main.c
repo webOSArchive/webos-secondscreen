@@ -34,6 +34,8 @@
 #define APP_ID    "org.webosarchive.secondscreen"
 #define LOG_PATH  "/media/internal/" APP_ID ".log"
 #define CONF_PATH "/media/internal/secondscreen.conf"
+/* alongside the conf, not /tmp: rename() can't cross the tmpfs boundary */
+#define CONF_TMP_PATH CONF_PATH ".tmp"
 
 #define SCREEN_W 1024
 #define SCREEN_H 768
@@ -109,6 +111,34 @@ static void parse_config(char *host, size_t hostlen, int *port)
         }
     }
     fclose(f);
+}
+
+/* Persist a discovered address, rewriting only host= and leaving every
+ * other key (port=, saver_secs=, idle_secs=) exactly as the user left it. */
+static void save_config_host(const char *host)
+{
+    char line[256];
+    FILE *in, *out;
+
+    out = fopen(CONF_TMP_PATH, "w");
+    if (!out) {
+        fprintf(stderr, "config: cannot write %s\n", CONF_TMP_PATH);
+        return;
+    }
+    in = fopen(CONF_PATH, "r");
+    if (in) {
+        int newline = 1;
+        while (fgets(line, sizeof line, in)) {
+            if (strncmp(line, "host=", 5) == 0) continue;
+            fputs(line, out);
+            newline = strchr(line, '\n') != NULL;
+        }
+        if (!newline) fputc('\n', out);   /* file didn't end in one */
+        fclose(in);
+    }
+    fprintf(out, "host=%s\n", host);
+    if (fclose(out) != 0 || rename(CONF_TMP_PATH, CONF_PATH) != 0)
+        fprintf(stderr, "config: failed to save host=%s\n", host);
 }
 
 /* The launcher passes params as raw JSON in argv ({"host":"x","port":n},
@@ -323,6 +353,8 @@ int main(int argc, char *argv[])
     saver_ok = saver_load_icon();
     show_waiting();
 
+    /* an argv target owns the run, so it also suppresses the sweep */
+    net_set_discovery(!arg_override);
     net_start(host, port);
     updater_check_start();   /* App Museum II version check, background */
     fps_t0 = SDL_GetTicks();
@@ -393,6 +425,18 @@ int main(int argc, char *argv[])
             PDL_ServiceCall("palm://com.palm.power/com/palm/power/activityStart",
                             WAKE_PAYLOAD);
             next_wake = now + WAKE_INTERVAL_MS;
+        }
+
+        {
+            /* the sweep found the Mac: persist it, and keep our own copy in
+             * step so the conf poll below doesn't retarget back to the
+             * address that just failed */
+            char dh[128];
+            if (net_take_discovered(dh, sizeof dh)) {
+                fprintf(stderr, "discovered sender at %s, saving to config\n", dh);
+                memcpy(host, dh, sizeof host);
+                save_config_host(host);
+            }
         }
 
         if (net_connected()) {

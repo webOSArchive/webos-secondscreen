@@ -43,6 +43,15 @@ without restarting the receiver. An explicit launch-param target disables
 that polling for the run — a dev session pointed at the VM can't be
 yanked away by the Mac autolaunch.
 
+**Subnet discovery** (`src/discover.c`, on by default): once the
+configured target has failed a couple of dials in a row, the receiver
+sweeps its own /24 for a sender and adopts whatever answers correctly
+(see `PROTOCOL.md`'s `Q`/`Y` handshake, with a fallback for pre-0.2.4
+senders identified by their frame traffic). A hit is persisted back to
+`host=` in the conf file so it survives a restart. Same launch-param
+override as above disables discovery for the run — it exists to recover
+from a stale conf, not to fight an explicit target.
+
 ## Runtime behavior
 
 - **Update check** (`src/updater.c`): at startup a background thread asks

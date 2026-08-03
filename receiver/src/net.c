@@ -5,6 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -13,22 +15,37 @@
 #include <netdb.h>
 
 #include "net.h"
+#include "discover.h"
 
 #define MAX_PAYLOAD (8u * 1024u * 1024u)
 #define RETRY_MS 2000
+
+/* A stale conf often points somewhere unroutable, where a blocking
+ * connect() burns ~130s of SYN retries before giving up — long enough to
+ * stall discovery for minutes in exactly the case it exists for. */
+#define DIAL_TIMEOUT_MS 4000
+
+/* Sweep the subnet once the configured target has clearly gone stale,
+ * then only occasionally: a sweep is a SYN per host and ~2s of work, and
+ * the conf-file self-heal may still be about to hand us the right one. */
+#define DISCOVER_AFTER_FAILS 2
+#define DISCOVER_EVERY_FAILS 5
 
 /* The server sends something at least every 3s ('P' ping when the screen
  * is static). A sleeping Mac leaves the TCP link half-open — no FIN, no
  * RST, recv blocks forever — so silence is the only dead-peer signal. */
 #define RECV_TIMEOUT_S 10
 
-#define PROTO_VERSION 1
-
 /* dial target — s_target_mx guarded: the main thread may retarget it
  * (config self-heal) while the net thread is between dial attempts */
 static pthread_mutex_t s_target_mx = PTHREAD_MUTEX_INITIALIZER;
 static char s_host[128];
 static int  s_port;
+
+static volatile int s_discover = 1;
+static pthread_mutex_t s_disc_mx = PTHREAD_MUTEX_INITIALIZER;
+static char s_disc_host[128];
+static int  s_disc_pending;
 
 static volatile int s_run;
 static volatile int s_connected;
@@ -89,6 +106,38 @@ static void send_hello(void)
     send_msg('H', p, 5);
 }
 
+static void tune_socket(int fd)
+{
+    int one = 1;
+    struct timeval tv;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    tv.tv_sec = RECV_TIMEOUT_S; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+}
+
+/* connect() with a bounded wait, leaving the socket blocking on success */
+static int connect_timeout(int fd, const struct sockaddr *sa, socklen_t salen,
+                           int ms)
+{
+    struct pollfd pf;
+    int fl, err = 0, r;
+    socklen_t elen = sizeof err;
+
+    fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) return -1;
+
+    r = connect(fd, sa, salen);
+    if (r < 0) {
+        if (errno != EINPROGRESS) return -1;
+        pf.fd = fd; pf.events = POLLOUT; pf.revents = 0;
+        do { r = poll(&pf, 1, ms); } while (r < 0 && errno == EINTR);
+        if (r <= 0) return -1;
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0)
+            return -1;
+    }
+    return fcntl(fd, F_SETFL, fl) < 0 ? -1 : 0;
+}
+
 static int dial(const char *host, int port)
 {
     struct addrinfo hints, *res = NULL, *ai;
@@ -104,24 +153,26 @@ static int dial(const char *host, int port)
     for (ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        if (connect_timeout(fd, ai->ai_addr, ai->ai_addrlen,
+                            DIAL_TIMEOUT_MS) == 0) break;
         close(fd); fd = -1;
     }
     freeaddrinfo(res);
-    if (fd >= 0) {
-        int one = 1;
-        struct timeval tv;
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        tv.tv_sec = RECV_TIMEOUT_S; tv.tv_usec = 0;
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    }
+    if (fd >= 0) tune_socket(fd);
     return fd;
+}
+
+static int should_sweep(int fails)
+{
+    if (!s_discover || fails < DISCOVER_AFTER_FAILS) return 0;
+    return (fails - DISCOVER_AFTER_FAILS) % DISCOVER_EVERY_FAILS == 0;
 }
 
 static void *net_thread(void *arg)
 {
     uint8_t *scratch = NULL;
     size_t scratch_cap = 0;
+    int fails = 0;
     (void)arg;
 
     while (s_run) {
@@ -135,10 +186,30 @@ static void *net_thread(void *arg)
 
         fd = dial(host, port);
         if (fd < 0) {
+            fails++;
             fprintf(stderr, "net: connect %s:%d failed, retrying\n", host, port);
+            if (should_sweep(fails)) {
+                char found[128];
+                fd = discover_sweep(port, found, sizeof found);
+                if (fd >= 0) {
+                    /* Adopt the socket the sweep validated: the sender began
+                     * capturing when it accepted, so redialling would cost it
+                     * a stop/start for nothing. */
+                    tune_socket(fd);
+                    net_set_target(found, port);
+                    memcpy(host, found, sizeof host);
+                    pthread_mutex_lock(&s_disc_mx);
+                    memcpy(s_disc_host, found, sizeof s_disc_host);
+                    s_disc_pending = 1;
+                    pthread_mutex_unlock(&s_disc_mx);
+                }
+            }
+        }
+        if (fd < 0) {
             usleep(RETRY_MS * 1000);
             continue;
         }
+        fails = 0;
         fprintf(stderr, "net: connected to %s:%d\n", host, port);
         pthread_mutex_lock(&s_send_mx);
         s_fd = fd;
@@ -194,6 +265,25 @@ void net_set_target(const char *host, int port)
     s_host[sizeof s_host - 1] = 0;
     s_port = port;
     pthread_mutex_unlock(&s_target_mx);
+}
+
+void net_set_discovery(int enabled)
+{
+    s_discover = enabled;
+}
+
+int net_take_discovered(char *host, size_t hostlen)
+{
+    int got;
+    pthread_mutex_lock(&s_disc_mx);
+    got = s_disc_pending;
+    if (got) {
+        strncpy(host, s_disc_host, hostlen - 1);
+        host[hostlen - 1] = 0;
+        s_disc_pending = 0;
+    }
+    pthread_mutex_unlock(&s_disc_mx);
+    return got;
 }
 
 void net_start(const char *host, int port)

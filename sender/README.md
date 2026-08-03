@@ -63,7 +63,15 @@ Screen Recording and Accessibility (granted to "webOS Second Screen",
 not your terminal). Without Screen Recording it shows an alert that opens
 the right Settings pane.
 
-Point the TouchPad at this Mac (also printed at startup):
+Without USB, the receiver finds this Mac on its own: after a couple of
+failed dials it sweeps its own /24, sends a `Q` discovery probe (see
+`../receiver/PROTOCOL.md`), and this sender answers with a `Y` reply
+carrying its hostname (`ClientSession.readLoop` in `Server.swift`) —
+no action needed on the Mac side. Discovery only covers the receiver's
+own subnet and skips a sender already streaming to another device.
+
+To point the TouchPad at this Mac by hand instead (also printed at
+startup):
 
 ```sh
 echo 'grep -v "^host=" /media/internal/secondscreen.conf 2>/dev/null > /tmp/ss.conf;

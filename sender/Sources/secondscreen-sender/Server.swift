@@ -3,6 +3,8 @@
 import Darwin
 import Foundation
 
+let PROTO_VERSION: UInt8 = 1
+
 func log(_ msg: String) {
     let t = DateFormatter()
     t.dateFormat = "HH:mm:ss"
@@ -53,6 +55,16 @@ final class ClientSession {
     private let capture: CaptureEngine
     private let encoder: JPEGEncoder
     private let injector: Injector
+    // frames go out from run() while the discovery reply goes out from
+    // readLoop() — without this the two send()s could interleave and
+    // shred the framing
+    private let sendLock = NSLock()
+
+    private func sendFramed(_ type: UInt8, _ payload: Data) -> Bool {
+        sendLock.lock()
+        defer { sendLock.unlock() }
+        return sendMsg(fd, type, payload)
+    }
 
     init(fd: Int32, capture: CaptureEngine, encoder: JPEGEncoder, injector: Injector) {
         self.fd = fd
@@ -76,6 +88,22 @@ final class ClientSession {
                 payload = p
             }
             switch hdr[0] {
+            case UInt8(ascii: "Q"):
+                // Discovery probe: a receiver that found us by sweeping the
+                // subnet asking us to prove we're a second-screen sender.
+                guard payload.count >= 4,
+                      Array(payload[0..<4]) == Array("SSCR".utf8) else {
+                    log("client: discovery probe with bad magic, ignoring")
+                    break
+                }
+                let name = Host.current().localizedName ?? "Mac"
+                let nameBytes = Array(name.utf8.prefix(63))
+                var reply = Data("SSND".utf8)
+                reply.append(PROTO_VERSION)
+                reply.append(UInt8(nameBytes.count))
+                reply.append(contentsOf: nameBytes)
+                _ = sendFramed(UInt8(ascii: "Y"), reply)
+                log("discovery probe answered (\(name))")
             case UInt8(ascii: "H") where payload.count >= 5:
                 let w = Int(payload[0]) << 8 | Int(payload[1])
                 let h = Int(payload[2]) << 8 | Int(payload[3])
@@ -112,12 +140,12 @@ final class ClientSession {
             case .timeout:
                 // screen is static (SCK sends nothing) — keepalive doubles
                 // as dead-client detection
-                if !sendMsg(fd, UInt8(ascii: "P"), Data()) { break loop }
+                if !sendFramed(UInt8(ascii: "P"), Data()) { break loop }
             case .frame(let pb):
                 let te = Date()
                 guard let jpeg = encoder.encode(pb) else { continue }
                 encodeMS += Date().timeIntervalSince(te) * 1000
-                if !sendMsg(fd, UInt8(ascii: "J"), jpeg) { break loop }
+                if !sendFramed(UInt8(ascii: "J"), jpeg) { break loop }
                 sent += 1
                 bytes += jpeg.count
                 if sent % 100 == 0 {

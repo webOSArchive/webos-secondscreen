@@ -297,6 +297,20 @@ on App Museum II (user). Project is at rest — no open work; next session
 starts from new bug reports or demand for the v2 backlog (keyboard,
 audio, scroll/right-click, etc. — see polish backlog above).
 
+### Sender 0.2.4 built + notarized (2026-08-03, not yet published)
+
+Mac-side companion to the receiver's new subnet discovery (`discover.c`,
+built on the Linux VM): `Server.swift` answers the `Q` probe (PROTOCOL.md)
+with a `Y`/`SSND` reply carrying the Mac's hostname, guarded by a
+`sendLock` so the reply can't interleave with the frame-send loop's
+writes on the same socket. Caught and fixed a compile bug from that
+refactor (`run()` still called a nonexistent `send()` instead of the
+renamed `sendFramed()`) before building. Updated `receiver/README.md`
+and `sender/README.md`, which had missed the discovery writeup the root
+README and PROTOCOL.md already had. `NOTARIZE=1 package-app.sh` run
+complete (Accepted, stapled) — release artifact is
+`sender/dist/webOS Second Screen.zip`. Not yet committed or published.
+
 ## Status (2026-07-25) and immediate next steps
 
 Phase 0 video is DONE and repeatable: real Mac screen mirrored to the

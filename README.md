@@ -46,7 +46,16 @@ launch again, and the virtual display comes up.
 
 - If the TouchPad is connected over USB, the receiver is automatically pointed at your Mac and started automatically.
 
-- If you cannot connect via USB, you must set the the server (that is, the Mac sender) address once on the device:
+- If you cannot connect via USB, the TouchPad finds the Mac by itself: after
+a few failed connection attempts it sweeps its own subnet for the sender,
+asks whatever answers to identify itself, and saves the address it finds. The
+first sweep runs about fifteen seconds after the receiver starts, and repeats
+every thirty seconds or so until it connects — so the launch order of the two
+apps doesn't matter.
+
+- Discovery only covers the /24 the TouchPad is on, and can't find a sender
+that is already streaming to another device. To set the server (that is, the
+Mac sender) address by hand instead:
 
 ```sh
 grep -v '^host=' /media/internal/secondscreen.conf 2>/dev/null > /tmp/ss.conf
