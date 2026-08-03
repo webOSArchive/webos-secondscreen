@@ -65,6 +65,11 @@ mv /tmp/ss.conf /media/internal/secondscreen.conf
 
 Then launch the TouchPad app manually.
 
+Note that a hand-set address is only used for as long as it answers: if it
+stops responding, discovery replaces it and rewrites `host=` with whatever it
+finds. To pin the receiver to one machine and turn the sweep off entirely, add
+`discover=0` to the same file.
+
 - The receiver reconnects automatically every 2 s, so start/stop order never matters. If your Mac's IP changes, the receiver re-reads the config every minute while disconnected and self-heals. After an hour with no connection it exits on its own so it won't keep the TouchPad's screen on all night.
 
 - The receiver checks the App Catalog for updates at startup and offers to install a newer version via Preware.

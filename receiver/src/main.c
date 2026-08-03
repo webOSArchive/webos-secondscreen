@@ -74,6 +74,11 @@ static GLfloat s_texco[8];
 static Uint32 s_idle_exit_ms = IDLE_EXIT_MS;
 static Uint32 s_saver_ms = SAVER_MS;
 
+/* discover=0 pins the receiver to the configured host: without it, a
+ * configured address that stops answering is replaced by whatever the
+ * sweep finds — and rewritten in the conf file. */
+static int s_conf_discover = 1;
+
 /* Launcher-launched PDK apps get no terminal and no /var/log/messages —
  * a log file on /media/internal is the only way to see anything. */
 static void log_redirect(void)
@@ -108,6 +113,8 @@ static void parse_config(char *host, size_t hostlen, int *port)
         } else if (strncmp(line, "saver_secs=", 11) == 0) {
             long v = atol(line + 11);
             if (v > 0) s_saver_ms = (Uint32)v * 1000u;
+        } else if (strncmp(line, "discover=", 9) == 0) {
+            s_conf_discover = atoi(line + 9) != 0;
         }
     }
     fclose(f);
@@ -324,6 +331,9 @@ int main(int argc, char *argv[])
             arg_override ? " (from argv; config polling off)" : "");
     fprintf(stderr, "timeouts: saver %us, idle exit %us\n",
             s_saver_ms / 1000u, s_idle_exit_ms / 1000u);
+    fprintf(stderr, "discovery: %s\n",
+            arg_override ? "off (argv target)" :
+            s_conf_discover ? "on" : "off (discover=0)");
 
     s_rgb = malloc(SCREEN_W * SCREEN_H * 2);
     if (!s_rgb) return 1;
@@ -354,7 +364,7 @@ int main(int argc, char *argv[])
     show_waiting();
 
     /* an argv target owns the run, so it also suppresses the sweep */
-    net_set_discovery(!arg_override);
+    net_set_discovery(!arg_override && s_conf_discover);
     net_start(host, port);
     updater_check_start();   /* App Museum II version check, background */
     fps_t0 = SDL_GetTicks();
@@ -470,6 +480,9 @@ int main(int argc, char *argv[])
                 int np = port;
                 memcpy(nh, host, sizeof nh);
                 parse_config(nh, sizeof nh, &np);
+                /* discover= is re-read here too, so the sweep can be
+                 * turned off (or back on) without restarting the app */
+                net_set_discovery(s_conf_discover);
                 if (strcmp(nh, host) != 0 || np != port) {
                     fprintf(stderr, "config changed: %s:%d -> %s:%d\n",
                             host, port, nh, np);
