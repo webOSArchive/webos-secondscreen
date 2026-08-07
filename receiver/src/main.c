@@ -449,30 +449,45 @@ int main(int argc, char *argv[])
             }
         }
 
-        if (net_connected()) {
-            if (saver) {
-                fprintf(stderr, "screensaver off (reconnected)\n");
-                saver = 0;
-                show_waiting();   /* next stream frame repaints */
-                dirty = 1;
+        {
+            /* Both disconnect timers count from the last *message*, never
+             * from a bare connect: a sleeping Mac keeps completing TCP
+             * handshakes out of its listen backlog and dropping them
+             * wordlessly, and treating each of those as activity held the
+             * saver and the idle exit off indefinitely (2026-08-07). A
+             * frame or a 'P' ping every 3s is what a live sender owes us. */
+            uint32_t age = net_rx_age_ms();
+            if (age != NET_RX_NEVER && age <= now) {
+                Uint32 rx = now - (Uint32)age;
+                if (rx > last_conn) {
+                    last_conn = rx;
+                    if (saver) {
+                        fprintf(stderr, "screensaver off (sender is back)\n");
+                        saver = 0;
+                        show_waiting();   /* next stream frame repaints */
+                        dirty = 1;
+                    }
+                }
             }
-            last_conn = now;
-        } else {
-            if (now - last_conn > s_idle_exit_ms) {
-                fprintf(stderr, "no connection for %us, exiting\n",
-                        s_idle_exit_ms / 1000u);
-                running = 0;
-            }
-            if (!saver && !prompt && saver_ok && now - last_conn > s_saver_ms) {
-                fprintf(stderr, "screensaver on\n");
-                saver = 1;
-                sav_x = (SCREEN_W - SAVER_ICON_W) / 2.0f;
-                sav_y = (SCREEN_H - SAVER_ICON_H) / 2.0f;
-                sav_vx = SAVER_SPEED;
-                sav_vy = SAVER_SPEED * 0.75f;
-                last_anim = now;
-                dirty = 1;
-            }
+        }
+
+        if (now - last_conn > s_idle_exit_ms) {
+            fprintf(stderr, "no connection for %us, exiting\n",
+                    s_idle_exit_ms / 1000u);
+            running = 0;
+        } else if (!saver && !prompt && saver_ok &&
+                   now - last_conn > s_saver_ms) {
+            fprintf(stderr, "screensaver on\n");
+            saver = 1;
+            sav_x = (SCREEN_W - SAVER_ICON_W) / 2.0f;
+            sav_y = (SCREEN_H - SAVER_ICON_H) / 2.0f;
+            sav_vx = SAVER_SPEED;
+            sav_vy = SAVER_SPEED * 0.75f;
+            last_anim = now;
+            dirty = 1;
+        }
+
+        if (!net_connected()) {
             if (!arg_override && now - last_conf_poll > CONF_POLL_MS) {
                 /* self-heal: the sender rewrites the conf with its IP on
                  * launch; pick it up without a receiver restart */

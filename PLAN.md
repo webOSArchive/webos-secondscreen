@@ -311,6 +311,51 @@ README and PROTOCOL.md already had. `NOTARIZE=1 package-app.sh` run
 complete (Accepted, stapled) — release artifact is
 `sender/dist/webOS Second Screen.zip`. Not yet committed or published.
 
+### Receiver 0.2.5: timers count traffic, not connects (2026-08-07)
+
+Field report: the TouchPad sat ~55 min on "Waiting for Connection…" after
+the Mac slept — no screensaver at 15 min, no self-kill at 60 min. NOT a
+regression; the saver/idle code was byte-identical to 0.2.3 and fired
+correctly the moment the thresholds were lowered under the *still-running*
+process (dropped `saver_secs=60`/`idle_secs=180` into the conf, the 60 s
+self-heal poll picked them up, and it logged `exiting` + `shutting down`
+seconds later).
+
+The real defect: `last_conn` was re-armed by a successful `connect()`.
+Device log evidence (`/media/internal/org.webosarchive.secondscreen.log`):
+78 `connected`/`disconnected` pairs with **zero** `no traffic for 10s`
+lines — so those sockets carried no bytes at all — and they were spread
+across the whole hour, not clustered. Longest all-failed stretch was 287
+dials, under the 900 s saver threshold. One sweep caught the mechanism
+outright: `discover: 192.168.10.20 is not a sender` — the Mac accepted and
+then failed the `Q` probe, i.e. **a sleeping Mac's kernel completes TCP
+handshakes out of its listen backlog while the sender process isn't
+running**. Same family as the 2026-07-27 half-open bug one layer up: then
+`net_connected()` was stuck true, now it flickered true just often enough.
+
+- `net.c`/`net.h`: `mark_rx()` stamps every complete message (`J` frame or
+  `P` ping) in the read loop; `net_rx_age_ms()` exposes the age
+  (`NET_RX_NEVER` if nothing ever arrived).
+- `main.c`: both timers count from that stamp. A bare connect no longer
+  re-arms anything — and waking the saver is traffic-gated too, else each
+  stray connect would dismiss it and restart its 15-min wait.
+- The idle/saver checks moved out of the `!net_connected()` branch and run
+  unconditionally, closing the connected-but-silent hole as well; only the
+  conf self-heal poll stays gated on being disconnected. `else if` so a
+  shutting-down app no longer starts the screensaver on its way out.
+
+Lesson (third time on this path): **liveness is bytes received, never
+socket state.** The sender's 3 s frame-or-ping guarantee is the only thing
+that proves a peer is awake.
+
+Verified on-device (0.2.5 installed, conf 60 s/180 s) with a two-mode stub
+sender: accept-then-close every 2 s → saver at T+60 s and exit at T+180 s
+despite ~85 momentary connects; ping-only link → 4.5 min with neither timer
+firing, so a live Mac on a static screen is still safe. Receiver 0.2.5 is
+built and packaged, NOT yet published to App Museum II. Sender-side backoff
+(don't accept-then-instantly-drop when `capture.start()` fails on a
+vanished virtual display, which is what generates the churn) is still open.
+
 ## Status (2026-07-25) and immediate next steps
 
 Phase 0 video is DONE and repeatable: real Mac screen mirrored to the

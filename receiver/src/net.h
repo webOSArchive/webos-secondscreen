@@ -10,6 +10,18 @@ void net_start(const char *host, int port);
 void net_stop(void);
 int  net_connected(void);
 
+/* Milliseconds since the last complete message arrived on an established
+ * link, or NET_RX_NEVER if nothing ever has.
+ *
+ * This — not net_connected() — is the honest "the peer is really there"
+ * signal, and what the disconnect timers count from. A sleeping Mac still
+ * completes TCP handshakes out of its listen backlog while the sender
+ * process isn't running, so a bare connect proves nothing; the sender
+ * guarantees a frame or a 'P' ping every 3s whenever it is actually awake
+ * (PROTOCOL.md liveness rule). */
+#define NET_RX_NEVER 0xffffffffu
+uint32_t net_rx_age_ms(void);
+
 /* Retarget the client (e.g. the config file changed while disconnected).
  * Takes effect on the reconnect loop's next dial attempt; an established
  * connection is left alone. */

@@ -55,6 +55,19 @@ static pthread_t s_thread;
 static pthread_mutex_t s_frame_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t s_send_mx  = PTHREAD_MUTEX_INITIALIZER;
 
+/* when the last complete message landed — see net_rx_age_ms() */
+static pthread_mutex_t s_rx_mx = PTHREAD_MUTEX_INITIALIZER;
+static struct timeval s_last_rx;
+static int s_have_rx;
+
+static void mark_rx(void)
+{
+    pthread_mutex_lock(&s_rx_mx);
+    gettimeofday(&s_last_rx, NULL);
+    s_have_rx = 1;
+    pthread_mutex_unlock(&s_rx_mx);
+}
+
 /* newest complete frame, handed off by pointer swap */
 static uint8_t *s_frame;
 static size_t   s_frame_len, s_frame_cap;
@@ -234,6 +247,9 @@ static void *net_thread(void *arg)
             }
             if (len > 0 && read_full(fd, scratch, len) < 0) break;
 
+            /* whatever it was, something arrived: the sender is awake */
+            mark_rx();
+
             if (hdr[0] == 'J') {
                 uint8_t *tb; size_t tc;
                 pthread_mutex_lock(&s_frame_mx);
@@ -302,6 +318,26 @@ void net_stop(void)
 }
 
 int net_connected(void) { return s_connected; }
+
+uint32_t net_rx_age_ms(void)
+{
+    struct timeval last, now;
+    long sec, ms;
+    int have;
+
+    pthread_mutex_lock(&s_rx_mx);
+    have = s_have_rx;
+    last = s_last_rx;
+    pthread_mutex_unlock(&s_rx_mx);
+    if (!have) return NET_RX_NEVER;
+
+    gettimeofday(&now, NULL);
+    sec = now.tv_sec - last.tv_sec;
+    if (sec < 0) return 0;                  /* clock stepped backwards */
+    if (sec > 1000000L) return NET_RX_NEVER - 1;   /* ~11 days: don't overflow */
+    ms = sec * 1000L + (now.tv_usec - last.tv_usec) / 1000L;
+    return ms > 0 ? (uint32_t)ms : 0;
+}
 
 size_t net_take_frame(uint8_t **buf, size_t *cap)
 {
