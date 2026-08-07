@@ -50,6 +50,12 @@ private func sendMsg(_ fd: Int32, _ type: UInt8, _ payload: Data) -> Bool {
     return sendAll(fd, msg)
 }
 
+/// Outcome of a session, for the caller's accept-loop backoff decision.
+struct SessionResult {
+    let framesSent: Int
+    let answeredProbe: Bool
+}
+
 final class ClientSession {
     private let fd: Int32
     private let capture: CaptureEngine
@@ -59,6 +65,10 @@ final class ClientSession {
     // readLoop() — without this the two send()s could interleave and
     // shred the framing
     private let sendLock = NSLock()
+    // readLoop() (reader thread) sets this, run() (caller's thread) reads
+    // it once at the end — needs its own lock, sendLock guards the socket
+    private let probeLock = NSLock()
+    private var probeAnswered = false
 
     private func sendFramed(_ type: UInt8, _ payload: Data) -> Bool {
         sendLock.lock()
@@ -104,6 +114,7 @@ final class ClientSession {
                 reply.append(contentsOf: nameBytes)
                 _ = sendFramed(UInt8(ascii: "Y"), reply)
                 log("discovery probe answered (\(name))")
+                probeLock.lock(); probeAnswered = true; probeLock.unlock()
             case UInt8(ascii: "H") where payload.count >= 5:
                 let w = Int(payload[0]) << 8 | Int(payload[1])
                 let h = Int(payload[2]) << 8 | Int(payload[3])
@@ -123,7 +134,8 @@ final class ClientSession {
         shutdown(fd, SHUT_RDWR)
     }
 
-    func run() {
+    @discardableResult
+    func run() -> SessionResult {
         let reader = Thread { self.readLoop() }  // strong: keeps the session alive until recv unblocks
         reader.name = "client-reader"
         reader.start()
@@ -161,6 +173,8 @@ final class ClientSession {
         }
         shutdown(fd, SHUT_RDWR)  // unblock the reader thread if it's still in recv
         log("client dropped (\(sent) frames sent)")
+        probeLock.lock(); let answeredProbe = probeAnswered; probeLock.unlock()
+        return SessionResult(framesSent: sent, answeredProbe: answeredProbe)
     }
 }
 
@@ -194,6 +208,13 @@ func runServer(port: UInt16, fps: Int, quality: Double, target: CaptureTarget, d
     }
     log("listening on :\(port) (\(fps) fps cap, quality \(quality)\(dryRun ? ", DRY-RUN injection" : ""))")
 
+    // Backoff for the accept-and-drop churn: when capture.start() fails
+    // (e.g. the virtual display vanished under display sleep), the kernel
+    // will happily keep completing handshakes forever. Slow down accept()
+    // instead of hammering a display that isn't coming back this second.
+    let backoffSchedule: [Double] = [2, 4, 8, 16, 30]
+    var consecutiveUnproductive = 0
+
     while true {
         var peer = sockaddr_in()
         var peerLen = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -206,30 +227,66 @@ func runServer(port: UInt16, fps: Int, quality: Double, target: CaptureTarget, d
         var ip = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
         inet_ntop(AF_INET, &peer.sin_addr, &ip, socklen_t(INET_ADDRSTRLEN))
         log("client connected from \(String(cString: ip))")
-        StatusUI.shared.setState("Streaming to \(String(cString: ip))")
 
         setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        // A peer that vanishes without a FIN/RST (WiFi drop, dead air) leaves
+        // send()/recv() blocked indefinitely without this — the P-ping "dead
+        // client detection" only works if a failed send() ever surfaces.
+        // Keepalive probes force that within ~14s instead of however long the
+        // OS takes to give up retransmitting on its own.
+        setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
+        var keepIdle: Int32 = 5
+        setsockopt(cfd, IPPROTO_TCP, TCP_KEEPALIVE, &keepIdle, socklen_t(MemoryLayout<Int32>.size))
+        var keepInterval: Int32 = 3
+        setsockopt(cfd, IPPROTO_TCP, TCP_KEEPINTVL, &keepInterval, socklen_t(MemoryLayout<Int32>.size))
+        var keepCount: Int32 = 3
+        setsockopt(cfd, IPPROTO_TCP, TCP_KEEPCNT, &keepCount, socklen_t(MemoryLayout<Int32>.size))
         // keep the kernel send queue short (~2 frames) so backpressure reaches
         // the latest-frame-wins mailbox instead of autotuning into MBs of latency
         var sndbuf: Int32 = 128 * 1024
         setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, socklen_t(MemoryLayout<Int32>.size))
 
         let capture = CaptureEngine(fps: fps, target: target)
+        var result: SessionResult? = nil
         do {
             try capture.start()
             log("capturing \(capture.display.width)x\(capture.display.height) → \(capture.outW)x\(capture.outH)")
+            StatusUI.shared.setState("Streaming to \(String(cString: ip))")
             let injector = Injector(displayID: capture.display.displayID,
                                     contentW: capture.outW, contentH: capture.outH,
                                     dryRun: dryRun)
-            ClientSession(fd: cfd, capture: capture, encoder: encoder,
-                          injector: injector).run()
+            result = ClientSession(fd: cfd, capture: capture, encoder: encoder,
+                                    injector: injector).run()
             capture.stop()
         } catch {
             log("capture start failed: \(error)")
         }
         close(cfd)
+
+        // A discovery-probe session that streams nothing afterward legitimately
+        // ends with 0 frames — don't let a subnet sweep push a healthy sender
+        // into backoff and delay the real connection that follows. One that
+        // goes on to stream is straightforwardly productive.
+        let unproductive: Bool
+        if let result = result, result.framesSent > 0 {
+            unproductive = false
+            consecutiveUnproductive = 0
+        } else if let result = result, result.answeredProbe {
+            unproductive = false  // probe-only: neutral, leave the counter alone
+        } else {
+            unproductive = true
+            consecutiveUnproductive += 1
+        }
+
         log("waiting for next client")
-        StatusUI.shared.setState("Waiting for TouchPad…")
+        if unproductive {
+            let wait = backoffSchedule[min(consecutiveUnproductive, backoffSchedule.count) - 1]
+            log("capture unavailable (\(consecutiveUnproductive) in a row); waiting \(wait)s before accepting")
+            StatusUI.shared.setState("Capture unavailable — retrying in \(Int(wait))s")
+            Thread.sleep(forTimeInterval: wait)
+        } else {
+            StatusUI.shared.setState("Waiting for TouchPad…")
+        }
     }
 }

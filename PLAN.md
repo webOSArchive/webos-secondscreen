@@ -352,9 +352,142 @@ Verified on-device (0.2.5 installed, conf 60 s/180 s) with a two-mode stub
 sender: accept-then-close every 2 s → saver at T+60 s and exit at T+180 s
 despite ~85 momentary connects; ping-only link → 4.5 min with neither timer
 firing, so a live Mac on a static screen is still safe. Receiver 0.2.5 is
-built and packaged, NOT yet published to App Museum II. Sender-side backoff
-(don't accept-then-instantly-drop when `capture.start()` fails on a
-vanished virtual display, which is what generates the churn) is still open.
+built and packaged, NOT yet published to App Museum II.
+
+### Sender: accept-loop backoff on capture failure (2026-08-07)
+
+Closes the open item from 0.2.5 above. Diagnosed first, per the handoff:
+`~/Library/Logs/webOSSecondScreen.log` for the incident window (14:42–15:26)
+showed the sender was running the whole time, logging `client connected
+from 192.168.10.90` immediately followed by `capture start failed: display
+4128838 is no longer available`, back to back every ~2s for 44 minutes —
+confirming the Mac-side half of the churn (story A, not a sleeping/unscheduled
+process).
+
+`sender/Sources/secondscreen-sender/Server.swift`:
+
+- `ClientSession.run()` now returns a `SessionResult` (`framesSent`,
+  `answeredProbe`) instead of `Void`. `readLoop()` flags `answeredProbe` when
+  it answers a `Q`/`SSCR` discovery probe.
+- `runServer`'s accept loop classifies each session: 0 frames and no probe
+  answered → **unproductive**; a probe-only session (0 frames, probe
+  answered) → **neutral**, so a subnet sweep can't push a healthy sender
+  into backoff and delay the real connection behind it; anything that sent
+  frames → **productive**, resets the counter.
+- After an unproductive session it sleeps `2, 4, 8, 16, 30`s (capped) before
+  the next `accept()`; pending redials just queue in the listen backlog.
+  Counter resets to 0 on the next productive session.
+- Moved `StatusUI.shared.setState("Streaming to …")` to fire only after
+  `capture.start()` succeeds (was unconditional right after `accept()`), and
+  added a distinct "Capture unavailable — retrying in Ns" state during the
+  wait, so the menu bar stops flapping Streaming ↔ Waiting every 2s.
+
+Verified locally: ran the debug build on a spare port with `--display 99`
+(nonexistent → `capture.start()` throws every time) and hammered it with
+the receiver's own reconnect-every-2s script. Log showed the backoff climb
+exactly `2.0s → 4.0s → 8.0s → 16.0s → 30.0s`, then holding at 30s for
+repeat failures — matches spec.
+
+Also verified against the real TouchPad (live packaged app quit, debug
+build run in its place): a normal session streams with backoff never
+engaging, including surviving one transient SCK interruption cleanly
+(productive reconnect, counter reset). Forced a real discovery sweep
+(wrong `host=` + receiver restart over novacom) — the probe was answered
+and the sweep adopted straight into a normal stream, no backoff anywhere
+in the log, confirming the neutral classification does its job.
+
+To be clear about scope: this backoff is *not* what fixes the reported
+screensaver bug — that's already closed by receiver 0.2.5's traffic-gated
+timers, above. This is pure cleanup so the Mac stops re-spinning
+`CaptureEngine` and flapping its status text every 2s while the display is
+legitimately unavailable. Confirmed end-to-end on real hardware: with the
+receiver's `saver_secs` set to 300 for a fast test, putting the Mac to
+sleep for 5 min and waking it produced the expected sequence — backoff
+climbing and holding at 30s while asleep, screensaver firing at 5 min on
+the TouchPad (traffic-gated, per 0.2.5), then capture recovering on its
+own the moment the Mac woke (no restart needed) and the screensaver
+clearing automatically once real traffic resumed. Not packaged or
+notarized; `appVersion` unchanged.
+
+### Sender: TCP keepalive for the dead-peer hang (2026-08-07)
+
+Found by accident while forcing the discovery-sweep test above: restarting
+the receiver mid-session left the sender's `ClientSession` permanently
+stuck. Neither `send()` nor `recv()` had a timeout, and neither socket had
+`SO_KEEPALIVE` — so a peer that disappears *silently* (no FIN/RST: a WiFi
+drop, an interface flap, a genuine black hole) can leave both threads
+blocked indefinitely, since a `send()` into that void can keep "succeeding"
+locally for a long time without keepalive. Because the server is
+one-client-at-a-time and `accept()` isn't called again until the stuck
+session's `run()` returns, this wedges the *entire* server — confirmed
+locally (`connect()` to the listen port itself started timing out).
+
+Fix (`Server.swift`, alongside the existing per-connection `setsockopt`
+calls): enabled `SO_KEEPALIVE` with `TCP_KEEPALIVE=5s` idle,
+`TCP_KEEPINTVL=3s`, `TCP_KEEPCNT=3` — roughly matching the receiver's own
+"no traffic for 10s" dead-link threshold. Once probes exhaust, the kernel
+fails the socket, `sendFramed`'s next `send()` returns false, and the
+existing exit path (log "client dropped", classify, back to `accept()`)
+takes over unchanged.
+
+Verified on real hardware: with the TouchPad connected over WiFi and
+simultaneously reachable over USB (novacom), ran `ifconfig eth0 down` on
+the device mid-stream — a true silent disappearance, no clean close. The
+Mac detected it and dropped the session in **12s** (previously: forever),
+and the listen socket was confirmed accepting new connections immediately
+after. Brought `eth0` back up and the TouchPad reconnected on its own.
+Distinct from the backoff fix above and from the original screensaver bug
+— this is about the sender noticing a *currently attached* client is gone,
+not about repeated `accept()`-and-fail churn.
+
+**Open follow-up (not done):** repeating the sleep/wake test end-to-end
+surfaced a real but minor gap in the backoff fix: `Thread.sleep()` doesn't
+count time spent in actual system suspend, so if the Mac sleeps mid-wait,
+waking it doesn't resume the accept loop immediately — it finishes out
+whatever was left of the *original* backoff interval (observed: 26s stall
+after wake, out of a 30s wait that had ~4s already elapsed before suspend).
+Fix would be to listen for `NSWorkspace.didWakeNotification` and interrupt
+any in-progress backoff wait immediately (e.g. swap `Thread.sleep` for a
+`DispatchSemaphore` wait that the wake observer signals). Deferred for now.
+
+### Sender fixes verified ready for release (2026-08-07)
+
+Beyond the targeted tests above, both fixes together were exercised across
+every real connection path on actual hardware, same debug build the whole
+session:
+
+- **USB auto-config**, from scratch: removed `secondscreen.conf` from the
+  device entirely, restarted the sender (no `--no-autolaunch`) — it
+  detected the TouchPad on USB, rewrote `host=`/`port=`, launched the
+  receiver, and it connected immediately. (One cosmetic false alarm: the
+  Mac log also printed `autolaunch: novacom shell failed (device busy?)`
+  even though the conf write and launch had already succeeded — `runProcess`
+  in `Novacom.swift` returns nil on a nonzero exit or its 10s timeout, and
+  novacom's own exit-code/responsiveness is already documented as flaky in
+  that file's header comment. Not a new bug; the function is explicitly
+  "best-effort, never fatal.")
+- **Pure subnet discovery**, no USB at all (TouchPad unplugged, sender and
+  receiver both freshly restarted): the receiver's sweep found the Mac and
+  adopted straight into a stream (`discovery probe answered` immediately
+  followed by `client hello`, no backoff, no delay).
+- **A real mid-stream WiFi blip** happened organically during testing:
+  receiver-side `net: no traffic for 10s, assuming dead link` (its own
+  `SO_RCVTIMEO`-based watchdog, `receiver/src/net.c:37`, predates this
+  session) fired and reconnected in about a second. Confirmed as ordinary
+  wireless packet loss, not a regression — neither today's fix engaged
+  (too fast for the sender's own 12–14s keepalive detection, and no
+  `capture.start()` failure was involved).
+
+All four paths (capture-failure backoff, dead-peer keepalive, USB
+auto-config, subnet discovery) plus the original sleep/wake screensaver
+scenario now check out on real hardware.
+
+### Sender 0.2.5 built + notarized (2026-08-07)
+
+Bumped `appVersion` 0.2.4 → 0.2.5 (`UpdateCheck.swift`) to cover the two
+fixes above (accept-loop backoff, TCP keepalive). `NOTARIZE=1
+package-app.sh` run complete (Accepted, stapled) — release artifact is
+`sender/dist/webOS Second Screen.zip`. Not yet committed or published.
 
 ## Status (2026-07-25) and immediate next steps
 

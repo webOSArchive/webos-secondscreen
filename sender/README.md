@@ -110,7 +110,11 @@ it.
 - Content renders natively at 1024×768 → no letterbox, sharper text, and
   SCK only delivers frames on change, so a static second screen costs
   ~zero bandwidth.
-- Capture runs only while a client is connected; one client at a time.
+- Capture runs only while a client is connected; one client at a time. If
+  `capture.start()` keeps failing (e.g. the virtual display vanished under
+  display sleep), the accept loop backs off 2/4/8/16/30 s (capped) between
+  attempts instead of hammering `accept()`; a discovery probe (`Q`/`SSCR`)
+  that doesn't go on to stream is neutral and never counts against this.
 - Mirror mode: SCK scales on-GPU to ≤1024×768 aspect-fit; the encoder
   letterboxes onto a black 1024×768 canvas because the receiver stretches
   every frame fullscreen (sending non-4:3 frames would distort).
@@ -118,7 +122,11 @@ it.
   send loop, plus SO_SNDBUF capped at 128 KB so TCP backpressure reaches
   the mailbox (frames drop) instead of queueing seconds of latency.
 - SCK delivers no frames while the screen is static; the send loop then
-  emits a `P` keepalive every 3 s, which doubles as dead-client detection.
+  emits a `P` keepalive every 3 s, which doubles as dead-client detection —
+  backed by `SO_KEEPALIVE` (5 s idle, 3 s interval, 3 probes) so a peer
+  that vanishes silently (no FIN/RST — a WiFi drop, a black hole) is
+  noticed in ~12–14 s instead of hanging the single-client accept loop
+  indefinitely.
 - Measured (Intel Mac, 2560×1440 → 1024×576, quality 0.6): encode
   ~8 ms/frame, ~60 KB/frame, ~12 Mbps at 25 fps; receiver renders ~20 fps
   (device JPEG decode is the ceiling on busy desktop content).
