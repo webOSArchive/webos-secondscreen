@@ -1,7 +1,22 @@
 /* TCP server: one client at a time, framed messages per PROTOCOL.md.
  * Capture runs only while a client is connected. */
+import AppKit
 import Darwin
 import Foundation
+
+// Signaled by an NSWorkspace wake observer so the accept-loop backoff wait
+// (below) can cut short immediately on wake instead of finishing out
+// whatever was left of the original interval — Thread.sleep doesn't count
+// time spent in actual system suspend.
+private let wakeSemaphore = DispatchSemaphore(value: 0)
+
+private func installWakeObserver() {
+    DispatchQueue.main.async {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { _ in wakeSemaphore.signal() }
+    }
+}
 
 let PROTO_VERSION: UInt8 = 1
 
@@ -207,6 +222,7 @@ func runServer(port: UInt16, fps: Int, quality: Double, target: CaptureTarget, d
         exit(1)
     }
     log("listening on :\(port) (\(fps) fps cap, quality \(quality)\(dryRun ? ", DRY-RUN injection" : ""))")
+    installWakeObserver()
 
     // Backoff for the accept-and-drop churn: when capture.start() fails
     // (e.g. the virtual display vanished under display sleep), the kernel
@@ -284,7 +300,12 @@ func runServer(port: UInt16, fps: Int, quality: Double, target: CaptureTarget, d
             let wait = backoffSchedule[min(consecutiveUnproductive, backoffSchedule.count) - 1]
             log("capture unavailable (\(consecutiveUnproductive) in a row); waiting \(wait)s before accepting")
             StatusUI.shared.setState("Capture unavailable — retrying in \(Int(wait))s")
-            Thread.sleep(forTimeInterval: wait)
+            // Drain any stale signal left over from a previous wait, then block for
+            // either the full backoff or a wake, whichever comes first.
+            while wakeSemaphore.wait(timeout: .now()) == .success {}
+            if wakeSemaphore.wait(timeout: .now() + wait) == .success {
+                log("woke from sleep; resuming accept loop immediately")
+            }
         } else {
             StatusUI.shared.setState("Waiting for TouchPad…")
         }
