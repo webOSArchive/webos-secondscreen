@@ -16,7 +16,7 @@ BUNDLE_ID="org.webosarchive.secondscreen.sender"
 # single source of truth: the appVersion constant in UpdateCheck.swift
 VERSION="$(sed -n 's/^let appVersion = "\(.*\)"$/\1/p' Sources/secondscreen-sender/UpdateCheck.swift)"
 [[ -n "$VERSION" ]] || { echo "cannot read appVersion from UpdateCheck.swift" >&2; exit 1; }
-ART="../artwork"
+ART="../meta"
 OUT="dist"
 APP="$OUT/$APP_NAME.app"
 SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')}"
@@ -28,7 +28,7 @@ BIN=".build/release/secondscreen-sender"
 
 echo "==> icon"
 rm -rf "$OUT"; mkdir -p "$OUT/AppIcon.iconset"
-# artwork: 48 (unused — no slot), 64, 256, 512; downscale 512 for the rest
+# meta: 48 (unused — no slot), 64, 256, 512; downscale 512 for the rest
 sips -z 16 16   "$ART/webOS-SecondScreen-512.png" --out "$OUT/AppIcon.iconset/icon_16x16.png"      >/dev/null
 sips -z 32 32   "$ART/webOS-SecondScreen-512.png" --out "$OUT/AppIcon.iconset/icon_16x16@2x.png"   >/dev/null
 sips -z 32 32   "$ART/webOS-SecondScreen-512.png" --out "$OUT/AppIcon.iconset/icon_32x32.png"      >/dev/null

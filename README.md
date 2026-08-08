@@ -5,7 +5,7 @@ monitor for your Mac** — Duet/Sidecar-style. The Mac creates a real
 virtual 1024×768 display, streams it to the TouchPad over WiFi at
 ~20–25 fps, and taps on the TouchPad control the Mac's cursor.
 
-![app icon](artwork/webOS-SecondScreen-256.png)
+![app icon](meta/webOS-SecondScreen-256.png)
 
 ## What you get
 
@@ -20,7 +20,7 @@ virtual 1024×768 display, streams it to the TouchPad over WiFi at
 - ~150 ms latency, ~12 Mbps on your LAN. Fine for dashboards, chat,
   documents, video; it won't replace Sidecar for fast motion.
 
-![app demo](artwork/screenshot1.png)
+![app demo](meta/screenshot1.png)
 
 ## Quick start
 
@@ -46,12 +46,19 @@ launch again, and the virtual display comes up.
 
 - If the TouchPad is connected over USB, the receiver is automatically pointed at your Mac and started automatically.
 
-- If you cannot connect via USB, the TouchPad finds the Mac by itself: after
-a few failed connection attempts it sweeps its own subnet for the sender,
-asks whatever answers to identify itself, and saves the address it finds. The
-first sweep runs about fifteen seconds after the receiver starts, and repeats
-every thirty seconds or so until it connects — so the launch order of the two
-apps doesn't matter.
+- If you cannot connect via USB, the TouchPad finds the Mac by itself: as soon
+as the configured address fails to answer it sweeps its own subnet for the
+sender, asks whatever answers to identify itself, and saves the address it
+finds. The first sweep runs within about five seconds of the receiver
+starting — so the launch order of the two apps doesn't matter.
+
+- Searching starts fast and then eases off. A sweep knocks on every address
+on your subnet, which a router running intrusion detection reads as a port
+scan, so the receiver searches every 15 seconds for the first four minutes,
+every 30 seconds through the seventh, and once a minute after that.
+It stops sweeping altogether once the screensaver comes on. Touching the
+screen to dismiss the screensaver starts the whole schedule again from the
+fast phase, as does any sender that actually starts sending.
 
 - Discovery only covers the /24 the TouchPad is on, and can't find a sender
 that is already streaming to another device. To set the server (that is, the
@@ -70,7 +77,7 @@ stops responding, discovery replaces it and rewrites `host=` with whatever it
 finds. To pin the receiver to one machine and turn the sweep off entirely, add
 `discover=0` to the same file.
 
-- The receiver reconnects automatically every 2 s, so start/stop order never matters. If your Mac's IP changes, the receiver re-reads the config every minute while disconnected and self-heals. After an hour with no connection it exits on its own so it won't keep the TouchPad's screen on all night.
+- The receiver reconnects automatically, so start/stop order never matters. The first retry is 2 s; while the sender stays away the gap doubles up to a minute, and if the Mac accepts the connection but is asleep — it answers the handshake without ever sending a frame — the receiver waits 30 s between tries rather than hammering it. If your Mac's IP changes, the receiver re-reads the config every minute while disconnected and self-heals. After an hour with no connection it exits on its own so it won't keep the TouchPad's screen on all night.
 
 - The receiver checks the App Catalog for updates at startup and offers to install a newer version via Preware.
 
@@ -86,7 +93,7 @@ finds. To pin the receiver to one machine and turn the sweep off entirely, add
 | `receiver/` | TouchPad PDK app (C, SDL 1.2 + OpenGL ES 1.1, NEON libjpeg-turbo). |
 | `receiver/PROTOCOL.md` | The tiny wire protocol between them. |
 | `server-test/` | Python reference server for receiver development. |
-| `artwork/` | Icons. |
+| `meta/` | Icons. |
 | `experiments/`, `PLAN.md` | The development journal: how this was figured out, ffmpeg-based prototypes, and every webOS/macOS gotcha hit along the way. |
 
 ## Building

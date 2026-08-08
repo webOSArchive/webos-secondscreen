@@ -18,18 +18,30 @@
 #include "discover.h"
 
 #define MAX_PAYLOAD (8u * 1024u * 1024u)
-#define RETRY_MS 2000
+
+/* Dial-retry backoff. A flat 2s retry meant one idle hour opposite a
+ * sleeping Mac cost ~900 dials; doubling the gap keeps a brief outage
+ * cheap to ride out without hammering the network for the rest of it. */
+#define RETRY_MS_MIN  2000u
+#define RETRY_MS_MAX 60000u
+
+/* A host that accepts and then never speaks is a sleeping Mac at an
+ * address we already know is right (PROTOCOL.md liveness: a live sender
+ * owes us a frame or a 'P' every 3s). There is nothing to discover, so
+ * wait quietly for it to wake rather than redialling every 2s. */
+#define SILENT_RETRY_MS 30000u
 
 /* A stale conf often points somewhere unroutable, where a blocking
  * connect() burns ~130s of SYN retries before giving up — long enough to
  * stall discovery for minutes in exactly the case it exists for. */
 #define DIAL_TIMEOUT_MS 4000
 
-/* Sweep the subnet once the configured target has clearly gone stale,
- * then only occasionally: a sweep is a SYN per host and ~2s of work, and
- * the conf-file self-heal may still be about to hand us the right one. */
-#define DISCOVER_AFTER_FAILS 2
-#define DISCOVER_EVERY_FAILS 5
+/* Start searching after the first failed dial. A dial to a dead address
+ * already costs DIAL_TIMEOUT_MS to fail, so this is several seconds of
+ * evidence rather than a hair trigger — and waiting for a second failure
+ * pushed the first sweep out to ~14s, which cost the fast phase a third
+ * of its budget in the minute it matters most. */
+#define DISCOVER_AFTER_FAILS 1
 
 /* The server sends something at least every 3s ('P' ping when the screen
  * is static). A sleeping Mac leaves the TCP link half-open — no FIN, no
@@ -43,6 +55,15 @@ static char s_host[128];
 static int  s_port;
 
 static volatile int s_discover = 1;
+
+/* Sweep suppression, written by the main thread. s_sweep_epoch is bumped
+ * when the screensaver is dismissed: the net thread notices, refills the
+ * sweep budget and cuts short whatever backoff it was sitting in, so a
+ * touch retries at once instead of waiting out a 60s gap. Single writer,
+ * and a stale read only costs one retry cycle. */
+static volatile int s_sweep_paused;
+static volatile unsigned s_sweep_epoch;
+
 static pthread_mutex_t s_disc_mx = PTHREAD_MUTEX_INITIALIZER;
 static char s_disc_host[128];
 static int  s_disc_pending;
@@ -175,34 +196,140 @@ static int dial(const char *host, int port)
     return fd;
 }
 
-static int should_sweep(int fails)
+/* Wall clock in ms, truncated to 32 bits. Only ever used for
+ * differences, which stay correct across the ~49-day wrap. */
+static uint32_t now_ms(void)
 {
-    if (!s_discover || fails < DISCOVER_AFTER_FAILS) return 0;
-    return (fails - DISCOVER_AFTER_FAILS) % DISCOVER_EVERY_FAILS == 0;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint32_t)((uint32_t)tv.tv_sec * 1000u + (uint32_t)(tv.tv_usec / 1000));
+}
+
+/* How long to leave between sweeps, as a function of how long this
+ * disconnection has lasted. Front-loaded, because a sweep only pays off
+ * when the Mac is coming up right about now; decaying afterwards,
+ * because a sweep SYNs all 254 addresses on the /24 and a router running
+ * IDS reads a sustained stream of those as a port scan — which is what
+ * got this device blocked off the network (198 sweeps in one idle hour,
+ * ~50k SYNs, measured 2026-08-08).
+ *
+ * The fast phase runs a full four minutes rather than one. A sleeping
+ * Mac that still accepts out of its listen backlog holds us in the
+ * silent-retry path for minutes at a stretch without sweeping at all
+ * (measured: two minutes of it, which under a one-minute fast phase left
+ * the search already decayed to 30s by the time the address actually
+ * went dead). Four minutes means the head of the schedule survives that.
+ *
+ * 15s and not 10s for that head: a four-minute run at 6 sweeps/min is a
+ * higher instantaneous rate than the 198-per-hour (3.3/min) that got the
+ * device blocked in the first place. Total volume is not the only thing
+ * an IDS scores — sustained rate is — so the fast phase stays below the
+ * rate we already know was noticed.
+ *
+ * The tail is what matters for the IDS: 1/min for as long as anyone is
+ * watching, and the screensaver stops sweeping altogether. Dismissing it
+ * restarts this clock, so someone who has just walked back to the device
+ * gets the fast phase again. */
+static unsigned sweep_interval_ms(uint32_t elapsed)
+{
+    if (elapsed < 240000u) return 15000u;   /* 4/min, minutes 1-4 */
+    if (elapsed < 420000u) return 30000u;   /* 2/min, minutes 5-7 */
+    return 60000u;                          /* 1/min from 8 on    */
+}
+
+static int should_sweep(int fails, uint32_t now, uint32_t ep_start,
+                        uint32_t last_sweep, int swept)
+{
+    if (!s_discover || s_sweep_paused) return 0;
+    if (fails < DISCOVER_AFTER_FAILS) return 0;
+    if (!swept) return 1;                   /* first of the episode */
+    return now - last_sweep >= sweep_interval_ms(now - ep_start);
+}
+
+static unsigned backoff_ms(int fails)
+{
+    unsigned ms = RETRY_MS_MIN;
+    int i;
+    for (i = 1; i < fails && ms < RETRY_MS_MAX; i++) ms <<= 1;
+    return ms > RETRY_MS_MAX ? RETRY_MS_MAX : ms;
+}
+
+/* How long to sleep before the next attempt. Sweeps only ever happen
+ * after a failed dial, so the dial backoff sets the ceiling on how often
+ * one can fire — without this the 60s backoff would starve the "six in
+ * the first minute" phase down to one. Redialling a single known address
+ * every 10s costs nothing; it is the /24 sweep that has to be rationed. */
+static unsigned next_wait_ms(int fails, uint32_t now, uint32_t ep_start,
+                             uint32_t last_sweep, int swept, uint32_t dial_ms)
+{
+    unsigned wait = backoff_ms(fails);
+
+    if (s_discover && !s_sweep_paused && swept) {
+        unsigned iv = sweep_interval_ms(now - ep_start);
+        unsigned since = now - last_sweep;
+        unsigned due = since >= iv ? 0 : iv - since;
+        /* A sweep can only fire after the next dial has already failed,
+         * so wake early enough to absorb that dial — otherwise every
+         * period silently grows by DIAL_TIMEOUT_MS and the fast phase
+         * delivers four sweeps a minute instead of six. */
+        due = due > dial_ms ? due - dial_ms : 0;
+        if (due < wait) wait = due;
+    }
+    /* never spin: the dial itself can return instantly on a RST */
+    return wait < 500u ? 500u : wait;
+}
+
+/* Wait between dials, in slices: a screensaver touch (which bumps the
+ * epoch) must not have to sit out a 60s backoff, and net_stop() should
+ * not either. */
+static void retry_wait(unsigned ms, unsigned epoch)
+{
+    while (ms > 0 && s_run && s_sweep_epoch == epoch) {
+        unsigned slice = ms > 200u ? 200u : ms;
+        usleep(slice * 1000u);
+        ms -= slice;
+    }
 }
 
 static void *net_thread(void *arg)
 {
     uint8_t *scratch = NULL;
     size_t scratch_cap = 0;
-    int fails = 0;
+    int fails = 0, swept = 0;
+    uint32_t ep_start = now_ms(), last_sweep = 0;
+    unsigned epoch = s_sweep_epoch;
     (void)arg;
 
     while (s_run) {
         char host[128];
-        int port, fd;
+        int port, fd, carried = 0;
+        uint32_t now, dial_start, dial_ms;
+
+        if (s_sweep_epoch != epoch) {
+            /* dismissed the screensaver: somebody is back at the device,
+             * so restart the episode and run the fast phase again */
+            epoch = s_sweep_epoch;
+            fails = 0;
+            swept = 0;
+            ep_start = now_ms();
+        }
 
         pthread_mutex_lock(&s_target_mx);
         memcpy(host, s_host, sizeof host);
         port = s_port;
         pthread_mutex_unlock(&s_target_mx);
 
+        dial_start = now_ms();
         fd = dial(host, port);
+        now = now_ms();
+        dial_ms = now - dial_start;
         if (fd < 0) {
             fails++;
             fprintf(stderr, "net: connect %s:%d failed, retrying\n", host, port);
-            if (should_sweep(fails)) {
+            if (should_sweep(fails, now, ep_start, last_sweep, swept)) {
                 char found[128];
+                last_sweep = now;
+                swept = 1;
                 fd = discover_sweep(port, found, sizeof found);
                 if (fd >= 0) {
                     /* Adopt the socket the sweep validated: the sender began
@@ -219,10 +346,15 @@ static void *net_thread(void *arg)
             }
         }
         if (fd < 0) {
-            usleep(RETRY_MS * 1000);
+            retry_wait(next_wait_ms(fails, now_ms(), ep_start, last_sweep,
+                                    swept, dial_ms), epoch);
             continue;
         }
-        fails = 0;
+        /* Note: no fails/sweeps reset here. A sleeping Mac still completes
+         * the handshake out of its listen backlog, and treating that as
+         * success re-armed the sweep schedule every few seconds — which is
+         * how one idle hour turned into 198 subnet scans. Only traffic
+         * ends the episode; see the carried check below. */
         fprintf(stderr, "net: connected to %s:%d\n", host, port);
         pthread_mutex_lock(&s_send_mx);
         s_fd = fd;
@@ -249,6 +381,7 @@ static void *net_thread(void *arg)
 
             /* whatever it was, something arrived: the sender is awake */
             mark_rx();
+            carried = 1;
 
             if (hdr[0] == 'J') {
                 uint8_t *tb; size_t tc;
@@ -267,8 +400,25 @@ static void *net_thread(void *arg)
         s_fd = -1;
         pthread_mutex_unlock(&s_send_mx);
         close(fd);
-        fprintf(stderr, "net: disconnected\n");
-        if (s_run) usleep(RETRY_MS * 1000);
+
+        if (carried) {
+            /* a link that really carried frames: the address is good and
+             * the sender was genuinely there, so the next outage starts
+             * from a clean slate — quick retry, fast sweep phase again */
+            fails = 0;
+            swept = 0;
+            ep_start = now_ms();
+            fprintf(stderr, "net: disconnected\n");
+            if (s_run) retry_wait(RETRY_MS_MIN, epoch);
+        } else {
+            /* accepted us and said nothing at all: the address is right,
+             * the Mac is asleep. Sweeping the subnet would only find the
+             * same silent host, so sit out a long wait instead. */
+            fails++;
+            fprintf(stderr, "net: %s:%d accepted but never spoke, waiting %us\n",
+                    host, port, SILENT_RETRY_MS / 1000u);
+            if (s_run) retry_wait(SILENT_RETRY_MS, epoch);
+        }
     }
     free(scratch);
     return NULL;
@@ -286,6 +436,12 @@ void net_set_target(const char *host, int port)
 void net_set_discovery(int enabled)
 {
     s_discover = enabled;
+}
+
+void net_set_sweep_paused(int paused)
+{
+    if (s_sweep_paused && !paused) s_sweep_epoch++;
+    s_sweep_paused = paused;
 }
 
 int net_take_discovered(char *host, size_t hostlen)

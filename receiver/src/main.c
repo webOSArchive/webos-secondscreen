@@ -59,7 +59,7 @@
 
 /* Screensaver: bounce the app icon on black after this long without a
  * connection (touch wakes it and resets the idle-exit clock) */
-#define SAVER_MS      (15u * 60u * 1000u)
+#define SAVER_MS      (10u * 60u * 1000u)
 #define SAVER_ICON_W  128    /* must match assets/make-saver-icon.py */
 #define SAVER_ICON_H  128
 #define SAVER_TEX_Y   768    /* icon parked in the texture strip frames never touch */
@@ -305,7 +305,7 @@ int main(int argc, char *argv[])
     uint8_t *jpg = NULL;
     size_t jpg_cap = 0;
     int have_frame = 0, running = 1, prompt = 0, arg_override = 0;
-    int saver = 0, saver_ok = 0;
+    int saver = 0, saver_ok = 0, saver_synced = 0;
     GLfloat sav_x = 0, sav_y = 0, sav_vx = 0, sav_vy = 0;
     Uint32 last_anim = 0;
     Uint32 next_wake = 0, last_draw = 0, fps_t0;
@@ -552,6 +552,16 @@ int main(int argc, char *argv[])
             show_waiting();
             have_frame = 0;
             dirty = 1;
+        }
+
+        /* Sweeping while the saver is up buys nothing — nobody is watching,
+         * and an hour of subnet scans is what gets the device blocked by a
+         * router running IDS. Dials continue throughout, so a Mac that
+         * wakes still brings the stream back on its own. Synced here, once,
+         * after every path that can flip `saver` this iteration. */
+        if (saver != saver_synced) {
+            net_set_sweep_paused(saver);
+            saver_synced = saver;
         }
 
         if (saver && now - last_anim >= SAVER_TICK_MS) {

@@ -50,7 +50,7 @@ Arrange Displays… / Quit. When launched from Finder, logs go to
 NOTARIZE=1 ./package-app.sh     # + notarize & staple (see below)
 ```
 
-Produces `dist/webOS Second Screen.app` (icon from `../artwork/`,
+Produces `dist/webOS Second Screen.app` (icon from `../meta/`,
 bundle id `org.webosarchive.secondscreen.sender`, LSUIElement). One-time
 notarization credential setup:
 

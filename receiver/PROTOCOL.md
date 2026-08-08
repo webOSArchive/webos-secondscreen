@@ -74,3 +74,14 @@ threads and interleaved writes would shred the framing.
 
 A server that is already streaming to another device leaves the probe
 sitting in its listen backlog, never answers, and is correctly skipped.
+
+Sweep rate decays with the age of the disconnection — every 15 s for the
+first four minutes, every 30 s through the seventh, then 1/min — and
+stops entirely while the screensaver is up. The clock restarts when a
+link carries traffic or the user dismisses the screensaver.
+
+A completed TCP handshake does not count as progress. A sleeping Mac
+accepts out of its listen backlog and then says nothing, so the receiver
+treats "accepted but never spoke" as a known-good address with a
+sleeping sender: it waits 30 s and redials rather than sweeping, because
+a sweep would only rediscover the same silent host.

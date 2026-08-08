@@ -31,6 +31,13 @@ void net_set_target(const char *host, int port);
  * explicit argv target owns the whole run, so main disables it there. */
 void net_set_discovery(int enabled);
 
+/* Suspend subnet sweeps while leaving the reconnect dials running — main
+ * pauses them for the duration of the screensaver, since nobody is
+ * watching and a sweep is a SYN to every host on the /24. Un-pausing
+ * refills the per-episode sweep budget and cuts short the current retry
+ * backoff, so dismissing the saver retries immediately. */
+void net_set_sweep_paused(int paused);
+
 /* Non-zero once after discovery has retargeted the client, filling host[]
  * with what it found — main persists that to the config file so the
  * self-heal poll doesn't drag the target back to the stale address. */

@@ -197,7 +197,7 @@ in-app server-address UI, virtual keyboard (`PDL_SetKeyboardState`),
 audio ('A' messages), scroll/right-click gestures, auto-reconnect
 backoff, on-screen connection-state toast.
 (2026-07-26 evening: keyboard + audio declared **v2**; current scope is
-community release. Icons drawn by user in `artwork/` — 48/64/256/512 px.)
+community release. Icons drawn by user in `meta/` — 48/64/256/512 px.)
 
 ### Distribution prep DONE (2026-07-26 evening, Mac side)
 
@@ -217,7 +217,7 @@ community release. Icons drawn by user in `artwork/` — 48/64/256/512 px.)
   expected, not a bug.
 - **App bundle**: `sender/package-app.sh` → signed
   `dist/webOS Second Screen.app` (Developer ID cert, team
-  Z97JEYX9UJ, hardened runtime, icns from artwork/, LSUIElement
+  Z97JEYX9UJ, hardened runtime, icns from meta/, LSUIElement
   menu-bar app with state + Arrange Displays… + Quit). Finder launches
   log to ~/Library/Logs/webOSSecondScreen.log. Notarize with
   `NOTARIZE=1 ./package-app.sh` after one-time
