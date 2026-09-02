@@ -25,11 +25,30 @@
 #define RETRY_MS_MIN  2000u
 #define RETRY_MS_MAX 60000u
 
-/* A host that accepts and then never speaks is a sleeping Mac at an
- * address we already know is right (PROTOCOL.md liveness: a live sender
- * owes us a frame or a 'P' every 3s). There is nothing to discover, so
- * wait quietly for it to wake rather than redialling every 2s. */
-#define SILENT_RETRY_MS 30000u
+/* A host that accepts and then never speaks is usually a sleeping Mac at
+ * an address we already know is right (PROTOCOL.md liveness: a live
+ * sender owes us a frame or a 'P' every 3s). There is nothing to
+ * discover, so wait quietly for it to wake rather than redialling.
+ *
+ * Ramped, not flat: the first silent accept after a link that was
+ * carrying frames is far more often the sender still tearing down the
+ * old session — its listen backlog completes our handshake while its
+ * accept loop is elsewhere — than a Mac that went to sleep in the last
+ * two seconds. A flat 30s charged that race the sleeping-Mac price and
+ * turned a blip into a 40s outage. Doubling reaches 30s after four
+ * silent accepts, i.e. inside the first minute, so an idle hour opposite
+ * a genuinely sleeping Mac still costs what the flat wait cost it. */
+#define SILENT_RETRY_MIN_MS  2000u
+#define SILENT_RETRY_MAX_MS 30000u
+
+/* "Wait, are you still there?" window. A link that carried frames a
+ * moment ago is a different proposition from an hour of nothing: the Mac
+ * is probably still up, still at this address, and about to come back.
+ * One SYN to one known host is not what an IDS scores — the /24 sweep
+ * is — so for the first two minutes of an episode the dial backoff is
+ * capped and only the sweep interval stays rationed. */
+#define RECHECK_MS     120000u
+#define RECHECK_CAP_MS  10000u
 
 /* A stale conf often points somewhere unroutable, where a blocking
  * connect() burns ~130s of SYN retries before giving up — long enough to
@@ -47,6 +66,13 @@
  * is static). A sleeping Mac leaves the TCP link half-open — no FIN, no
  * RST, recv blocks forever — so silence is the only dead-peer signal. */
 #define RECV_TIMEOUT_S 10
+
+/* ...but a sender that has just accepted owes us that first byte within
+ * 3s, and the socket that stays silent forever is the one the kernel
+ * accepted on its own. Waiting the full steady-state deadline to notice
+ * that just adds dead air to every reconnect, so the first read gets a
+ * tighter one; it is raised the moment anything arrives. */
+#define FIRST_RX_TIMEOUT_S 5
 
 /* dial target — s_target_mx guarded: the main thread may retarget it
  * (config self-heal) while the net thread is between dial attempts */
@@ -89,6 +115,16 @@ static void mark_rx(void)
     pthread_mutex_unlock(&s_rx_mx);
 }
 
+/* net thread only: the deadline currently armed on the socket */
+static int s_rx_timeout_s = FIRST_RX_TIMEOUT_S;
+
+/* Heartbeat on the back-channel, net thread only, re-armed per connection.
+ * Zero until a sender asks for one with a 'V' advert, which is what keeps
+ * this safe for older senders: they never ask, so we never send, so they
+ * never see a message type they'd log as unknown every few seconds. */
+static unsigned s_ping_ms;
+static uint32_t s_last_ping;
+
 /* newest complete frame, handed off by pointer swap */
 static uint8_t *s_frame;
 static size_t   s_frame_len, s_frame_cap;
@@ -103,7 +139,7 @@ static int read_full(int fd, void *p, size_t n)
             if (r < 0 && errno == EINTR) continue;
             if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 fprintf(stderr, "net: no traffic for %ds, assuming dead link\n",
-                        RECV_TIMEOUT_S);
+                        s_rx_timeout_s);
             return -1;
         }
         b += r; n -= (size_t)r;
@@ -140,13 +176,19 @@ static void send_hello(void)
     send_msg('H', p, 5);
 }
 
+static void set_rx_timeout(int fd, int secs)
+{
+    struct timeval tv;
+    tv.tv_sec = secs; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    s_rx_timeout_s = secs;
+}
+
 static void tune_socket(int fd)
 {
     int one = 1;
-    struct timeval tv;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    tv.tv_sec = RECV_TIMEOUT_S; tv.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    set_rx_timeout(fd, FIRST_RX_TIMEOUT_S);
 }
 
 /* connect() with a bounded wait, leaving the socket blocking on success */
@@ -246,6 +288,17 @@ static int should_sweep(int fails, uint32_t now, uint32_t ep_start,
     return now - last_sweep >= sweep_interval_ms(now - ep_start);
 }
 
+/* Wait after a host accepted us and then said nothing. See
+ * SILENT_RETRY_MIN_MS: short while it could still be the old session
+ * draining, settling to the sleeping-Mac wait once it clearly isn't. */
+static unsigned silent_retry_ms(int silents)
+{
+    unsigned ms = SILENT_RETRY_MIN_MS;
+    int i;
+    for (i = 1; i < silents && ms < SILENT_RETRY_MAX_MS; i++) ms <<= 1;
+    return ms > SILENT_RETRY_MAX_MS ? SILENT_RETRY_MAX_MS : ms;
+}
+
 static unsigned backoff_ms(int fails)
 {
     unsigned ms = RETRY_MS_MIN;
@@ -263,6 +316,15 @@ static unsigned next_wait_ms(int fails, uint32_t now, uint32_t ep_start,
                              uint32_t last_sweep, int swept, uint32_t dial_ms)
 {
     unsigned wait = backoff_ms(fails);
+
+    /* Early in an episode this is a re-check, not a search: keep asking
+     * the address we know at RECHECK_CAP_MS regardless of what the
+     * doubling has reached. Applies with discovery off or the sweep
+     * paused too — capping one SYN costs the IDS budget nothing, and
+     * without it a pinned-host receiver sat out a full minute between
+     * dials within 90s of a drop. */
+    if (now - ep_start < RECHECK_MS && wait > RECHECK_CAP_MS)
+        wait = RECHECK_CAP_MS;
 
     if (s_discover && !s_sweep_paused && swept) {
         unsigned iv = sweep_interval_ms(now - ep_start);
@@ -295,7 +357,7 @@ static void *net_thread(void *arg)
 {
     uint8_t *scratch = NULL;
     size_t scratch_cap = 0;
-    int fails = 0, swept = 0;
+    int fails = 0, swept = 0, silents = 0;
     uint32_t ep_start = now_ms(), last_sweep = 0;
     unsigned epoch = s_sweep_epoch;
     (void)arg;
@@ -311,6 +373,7 @@ static void *net_thread(void *arg)
             epoch = s_sweep_epoch;
             fails = 0;
             swept = 0;
+            silents = 0;
             ep_start = now_ms();
         }
 
@@ -360,12 +423,22 @@ static void *net_thread(void *arg)
         s_fd = fd;
         pthread_mutex_unlock(&s_send_mx);
         s_connected = 1;
+        s_ping_ms = 0;          /* until this sender asks for a heartbeat */
         send_hello();
 
         while (s_run) {
             uint8_t hdr[5];
             uint32_t len;
             if (read_full(fd, hdr, 5) < 0) break;
+            if (!carried) {
+                /* it spoke, so this is a real session and not a socket
+                 * the listen backlog completed on its own: swap the
+                 * tight first-read deadline for the steady-state one
+                 * before a slow frame can trip over it */
+                carried = 1;
+                silents = 0;
+                set_rx_timeout(fd, RECV_TIMEOUT_S);
+            }
             len = ((uint32_t)hdr[1] << 24) | ((uint32_t)hdr[2] << 16) |
                   ((uint32_t)hdr[3] << 8) | hdr[4];
             if (len > MAX_PAYLOAD) {
@@ -381,7 +454,6 @@ static void *net_thread(void *arg)
 
             /* whatever it was, something arrived: the sender is awake */
             mark_rx();
-            carried = 1;
 
             if (hdr[0] == 'J') {
                 uint8_t *tb; size_t tc;
@@ -391,8 +463,32 @@ static void *net_thread(void *arg)
                 scratch = tb; scratch_cap = tc;
                 s_seq++;
                 pthread_mutex_unlock(&s_frame_mx);
+            } else if (hdr[0] == 'V' && len >= 2) {
+                /* Sender capability advert (protocol v2+): its version and
+                 * how often it wants a heartbeat, 0 meaning never. */
+                s_ping_ms = scratch[1] ? (unsigned)scratch[1] * 1000u : 0;
+                fprintf(stderr, "net: sender protocol v%u, heartbeat %us\n",
+                        scratch[0], s_ping_ms / 1000u);
+                if (s_ping_ms) {
+                    /* straight away, not in three seconds: the sender can
+                     * only start timing us out once it has heard one */
+                    send_msg('P', NULL, 0);
+                    s_last_ping = now_ms();
+                }
             }
             /* 'P' ping and unknown types: ignored */
+
+            /* Heartbeat, so the sender can tell a receiver that walked out
+             * of WiFi range from one that is simply not being touched. The
+             * sender owes us traffic every 3s, so this loop wakes often
+             * enough to keep the interval without a timer of its own. */
+            if (s_ping_ms) {
+                uint32_t t = now_ms();
+                if (t - s_last_ping >= s_ping_ms) {
+                    send_msg('P', NULL, 0);
+                    s_last_ping = t;
+                }
+            }
         }
 
         s_connected = 0;
@@ -411,13 +507,22 @@ static void *net_thread(void *arg)
             fprintf(stderr, "net: disconnected\n");
             if (s_run) retry_wait(RETRY_MS_MIN, epoch);
         } else {
-            /* accepted us and said nothing at all: the address is right,
-             * the Mac is asleep. Sweeping the subnet would only find the
-             * same silent host, so sit out a long wait instead. */
-            fails++;
-            fprintf(stderr, "net: %s:%d accepted but never spoke, waiting %us\n",
-                    host, port, SILENT_RETRY_MS / 1000u);
-            if (s_run) retry_wait(SILENT_RETRY_MS, epoch);
+            /* Accepted us and said nothing at all: the address is right,
+             * so sweeping the subnet would only find the same silent
+             * host. Either the sender is still finishing with the
+             * previous session — likely if we were streaming moments
+             * ago, and worth coming straight back for — or the Mac is
+             * asleep, which the ramp reaches within the first minute.
+             * Not a dial failure either way, so `fails` is left alone:
+             * counting these against the dial backoff meant a handful of
+             * silent accepts had already pushed the next real retry out
+             * to half a minute before anything had actually failed. */
+            unsigned wait;
+            silents++;
+            wait = silent_retry_ms(silents);
+            fprintf(stderr, "net: %s:%d accepted but never spoke (%d), waiting %us\n",
+                    host, port, silents, wait / 1000u);
+            if (s_run) retry_wait(wait, epoch);
         }
     }
     free(scratch);

@@ -1,4 +1,4 @@
-# Second Screen wire protocol (v1)
+# Second Screen wire protocol (v2)
 
 Single TCP connection. The **device connects to the server** (device-pull:
 no firewall rule needed on webOS — RELATED,ESTABLISHED is allowed).
@@ -21,6 +21,7 @@ offset  size  field
 | `A`  | reserved | audio chunk (Phase 2) |
 | `P`  | empty | ping / keepalive (client ignores) |
 | `Y`  | `"SSND"`, u8 protocol_version, u8 name_len, name bytes (UTF-8, ≤ 63) | answer to a `Q` probe: yes, I'm a sender, and this is my name |
+| `V`  | u8 protocol_version, u8 client_ping_secs | v2: capability advert, sent at the start of a session before the first frame, and again immediately after any `Y` |
 
 The server should apply **latest-frame-wins** on send: keep a 1-slot queue
 and drop stale frames rather than letting TCP backpressure grow latency.
@@ -31,11 +32,52 @@ link after 10 s of silence (a sleeping server leaves TCP half-open with
 no FIN/RST, so silence is the only dead-peer signal) and falls back to
 its reconnect loop.
 
+**Liveness, the other way (v2).** The same half-open problem exists in
+reverse and is worse, because the server is single-client: a device that
+walks out of WiFi range sends no FIN either, and the server's TCP will
+happily retransmit into the void for minutes while its accept loop is
+blocked — so the device is back on the network, redialling, and getting
+nothing but a socket its own kernel completed out of the backlog.
+
+So the server advertises `V` once per session with the heartbeat interval
+it wants (`client_ping_secs`, 0 meaning none), and a client that receives
+one sends an empty `P` at that interval. **The server may only apply a
+receive deadline to a client that has already sent at least one `P`**, and
+must wait forever on one that has not.
+
+That last rule is what makes the version mix safe, in both directions:
+
+- **v1 client, v2 server.** The client ignores `V` (every released one
+  drains a message by its length header and acts only on the types it
+  knows, in the stream loop and in the discovery handshake alike), so it
+  never heartbeats, so the server never arms the deadline and behaves
+  exactly as it did before.
+- **v1 server, v2 client.** No `V` arrives, so the client sends no `P`,
+  and the old server never sees a message type it would log as unknown.
+
+Neither side may infer the other's version from the `H`/`Y`
+protocol_version byte for this purpose — it is diagnostic only, and has
+never been compared to anything. `V` and the first `P` are the signals.
+
+The advert is repeated after a `Y` because a discovering client reads the
+socket with its own handshake loop until the `Y` lands, and so has already
+consumed the one sent on connect — and it then *adopts* that socket as the
+live link rather than redialling (see Discovery below). Without the repeat,
+every session established by discovery would run without a heartbeat.
+
+That deadline is 5 s until the connection's first byte arrives. A server
+that has just accepted owes one inside the 3 s liveness bound, so a
+connection still silent at 5 s is one its kernel completed out of the
+listen backlog while the accept loop was busy elsewhere — the client
+gives up on those quickly and redials rather than spending the full
+dead-link timeout on each.
+
 ## Client → server
 
 | type | payload | meaning |
 |------|---------|---------|
-| `H`  | u16be width, u16be height, u8 protocol_version (=1) | hello, sent on connect |
+| `H`  | u16be width, u16be height, u8 protocol_version (=2) | hello, sent on connect |
+| `P`  | empty | v2: heartbeat, sent only to a server whose `V` asked for one |
 | `Q`  | `"SSCR"`, u8 protocol_version | discovery probe: are you a second-screen sender? |
 | `T`  | u8 finger (0–4), u8 action (0=down, 1=move, 2=up), u16be x, u16be y | touch event in screen coords |
 | `K`  | u16be SDL keysym, u8 down | key event (virtual keyboard, Phase 2) |

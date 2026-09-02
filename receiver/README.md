@@ -86,6 +86,31 @@ stream back unattended; only *discovering* a new address needs a touch.
 sweep can only fire after a dial has failed — without it the 60 s
 backoff would starve the fast phase down to one sweep a minute.
 
+**Rationing sweeps is not the same as rationing reconnects.** A dial is
+one SYN to one address the receiver already believes in; only the /24
+sweep is what an IDS scores. So the first two minutes after a link goes
+down are treated as a re-check — "are you still there?" — rather than a
+search, and three things stay deliberately impatient there
+(`RECHECK_MS`, `SILENT_RETRY_*` and `FIRST_RX_TIMEOUT_S` in `net.c`):
+
+- the dial backoff is capped at 10 s no matter what the doubling has
+  reached, and unlike the sweep clamp above this applies with discovery
+  off or the screensaver's pause in effect too — otherwise a receiver
+  pinned to `discover=0` sat out a full minute between dials within 90 s
+  of a drop;
+- a host that accepts and then says nothing gets 2 s, 4 s, 8 s, 16 s,
+  30 s rather than a flat 30 s. The first such accept after a working
+  link is usually the *sender* still tearing down the old session — its
+  backlog completes our handshake while its accept loop is elsewhere —
+  and a flat wait charged that race the sleeping-Mac price. The ramp is
+  at 30 s inside the first minute, so an idle hour still costs what the
+  flat wait cost it;
+- the first read on a new connection has a 5 s deadline instead of the
+  steady-state 10 s, raised the moment anything arrives. A live sender
+  owes a byte within 3 s of accepting, so the socket still silent at 5 s
+  is the one only the kernel accepted — no reason to spend the full
+  dead-link timeout finding that out on every reconnect.
+
 ## Runtime behavior
 
 - **Update check** (`src/updater.c`): at startup a background thread asks
@@ -99,9 +124,21 @@ backoff would starve the fast phase down to one sweep a minute.
   `src/main.c`.
 - **Dead-peer detection**: the receiver drops the link after 10 s of
   silence (`SO_RCVTIMEO`; the sender guarantees a frame or ping every
-  3 s). A sleeping Mac leaves TCP half-open — without this the app
+  3 s), or after 5 s if the connection has not yet carried a single
+  byte. A sleeping Mac leaves TCP half-open — without this the app
   thinks it's connected forever and neither the screensaver nor the
   idle exit ever triggers.
+- **Heartbeat** (protocol v2): the same half-open trap catches the *sender*
+  when this device walks out of WiFi range, and there it is worse — the
+  sender takes one client at a time, so until its TCP gives up it is not
+  accepting the reconnect we are busy making. So a sender that advertises
+  `V` on connect gets an empty `P` back every 3 s, sent from the read loop
+  (the sender owes us traffic every 3 s, so it wakes often enough to keep
+  the interval without a timer). A sender that sends no `V` is pre-v2 and
+  gets nothing — silence is what it expects, and an unknown message every
+  3 s is not. A sweep-adopted socket gets its advert from the copy the
+  sender repeats after the `Y`, since `discover.c`'s handshake loop has
+  already eaten the first one. See `PROTOCOL.md`.
 - **Screensaver**: after 10 min without a connection (`saver_secs=` in
   the conf) the app icon bounces around a black screen, DVD-player
   style. Touch wakes it back to the waiting screen (and resets the

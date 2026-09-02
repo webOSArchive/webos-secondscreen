@@ -113,8 +113,23 @@ it.
 - Capture runs only while a client is connected; one client at a time. If
   `capture.start()` keeps failing (e.g. the virtual display vanished under
   display sleep), the accept loop backs off 2/4/8/16/30 s (capped) between
-  attempts instead of hammering `accept()`; a discovery probe (`Q`/`SSCR`)
-  that doesn't go on to stream is neutral and never counts against this.
+  attempts instead of hammering `accept()`.
+- Only a *capture* failure counts toward that backoff — `start()` throwing,
+  or capture ending on its own without ever handing over a frame. A session
+  that ends because the client went away must not, however few frames it
+  sent: a discovery probe (`Q`/`SSCR`) legitimately streams nothing, and so
+  does the receiver's reconnect arriving while this loop is still busy with
+  the link it replaces. Counting those stopped `accept()` at exactly the
+  moment a receiver was trying to come back, and the two ends then backed
+  off past each other for a minute over what was a two-second WiFi blip.
+- The listen backlog is 4 (still one client at a time — the accept loop is
+  what enforces that) so a receiver redialling mid-session gets queued
+  rather than having its SYN dropped. The kernel completes those handshakes
+  by itself, and the receiver drops a socket that says nothing within 5 s,
+  so each one is checked for an already-closed peer (`peerGone()`, a
+  non-blocking `MSG_PEEK`) and discarded without standing up a capture —
+  otherwise a dead queued connection delays the live one behind it by a
+  whole virtual-display start/stop.
 - Mirror mode: SCK scales on-GPU to ≤1024×768 aspect-fit; the encoder
   letterboxes onto a black 1024×768 canvas because the receiver stretches
   every frame fullscreen (sending non-4:3 frames would distort).
@@ -127,6 +142,21 @@ it.
   that vanishes silently (no FIN/RST — a WiFi drop, a black hole) is
   noticed in ~12–14 s instead of hanging the single-client accept loop
   indefinitely.
+- That keepalive is a backstop, not the primary signal: it can only fire on
+  an *idle* connection, and this one is never idle — we are sending a ping
+  or a frame into it every 3 s, so the retransmit timer governs instead and
+  the socket can stay "up" for minutes. Since the accept loop is
+  single-client, every one of those minutes is one where the receiver is
+  back on the network, redialling, and getting nothing but a socket the
+  kernel completed out of the backlog. So v2 adds a heartbeat the other
+  way: the sender advertises `V` on connect, a v2 receiver then sends `P`
+  every 3 s, and 10 s without a byte from a client *that has heartbeated*
+  ends the session. A client that has never sent one is waited on forever,
+  which is what keeps pre-v2 receivers working untouched — see
+  `PROTOCOL.md` for the full compatibility argument.
+- The client socket carries a 1 s `SO_RCVTIMEO` purely so the reader thread
+  surfaces to run that check; `readFull()` loops straight over an expiry
+  and never treats it as an error.
 - Measured (Intel Mac, 2560×1440 → 1024×576, quality 0.6): encode
   ~8 ms/frame, ~60 KB/frame, ~12 Mbps at 25 fps; receiver renders ~20 fps
   (device JPEG decode is the ceiling on busy desktop content).

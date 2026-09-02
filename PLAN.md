@@ -37,11 +37,14 @@ TouchPad client, with touch (and keyboard) sent back.
   path. This exact bug bit the project three separate times (see history)
   before every liveness check was traffic-gated.
 
-## Current status (2026-08-08)
+## Current status (2026-09-02)
 
-Both sides released as **0.3.0** — sender notarized zip in `sender/dist/`,
-receiver on App Museum II. Core product is feature-complete and stable for
-daily use:
+**0.3.0** is the released pair — sender notarized zip in `sender/dist/`,
+receiver on the App Catalog. **0.3.1 is committed but not built or
+released**: the receiver side compiles clean, the Swift side has only been
+reviewed (no toolchain on the Linux box the work was done on), so it needs
+a Mac build and a hardware pass before it ships. Core product is
+feature-complete and stable for daily use:
 
 - Extended virtual desktop (not mirroring), ~20–27 fps MJPEG depending on
   content, touch → mouse.
@@ -90,6 +93,28 @@ new bug reports or backlog demand.
   now interrupts immediately on Mac wake instead of finishing out a stale
   interval (`NSWorkspace.didWakeNotification` → `DispatchSemaphore`),
   verified on real hardware.
+- **2026-09-02 — 0.3.1 (unreleased):** reconnect latency, after 0.3.0's
+  rate limiting turned out to have rationed *reconnects* at the same rate
+  as sweeps. A dial is one SYN to an address we already believe in; only
+  the /24 sweep is what an IDS scores, so the first two minutes after a
+  drop are now treated as a re-check rather than a search (capped dial
+  backoff, a ramped rather than flat silent-accept wait, a 5 s deadline on
+  a connection's first byte). The sender was compounding it: any session
+  that sent 0 frames counted as "capture unavailable", so a receiver's own
+  reconnect pushed it into a backoff that stopped `accept()` exactly when
+  somebody was trying to come back. Sweep cadence is deliberately
+  untouched. Measured on a simulated 25 s stall: 52 s of black screen
+  before, 28 s after.
+  Also **protocol v2** — a receiver→sender heartbeat, because the sender's
+  half-open detection could not work: its keepalive only fires on an idle
+  connection and it pings every 3 s, so a receiver that walks out of WiFi
+  range leaves the single-client accept loop blocked for minutes. Sender
+  advertises `V` on connect, a v2 receiver answers `P` every 3 s, and the
+  deadline arms only for a client that has actually heartbeated — which is
+  what keeps every older receiver working untouched (they all drain unknown
+  message types by length, verified back to the first release). This is the
+  liveness bug, round three; see `PROTOCOL.md` for the compatibility
+  argument.
 
 ## Future ideas / backlog
 

@@ -9,7 +9,7 @@ import Foundation
 // Single source of truth for the sender version — package-app.sh reads
 // this line for the bundle's Info.plist. Keep equal to the GitHub
 // release tag.
-let appVersion = "0.3.0"
+let appVersion = "0.3.1"
 
 private let latestReleaseAPI =
     "https://api.github.com/repos/webOSArchive/webos-secondscreen/releases/latest"
