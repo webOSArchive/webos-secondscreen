@@ -29,8 +29,10 @@ TouchPad client, with touch (and keyboard) sent back.
   reach the app. Keyboard: `PDL_SetKeyboardState()` summons the system
   virtual keyboard.
 - Toolchain: Linaro GCC 4.9.4 (`arm-linux-gnueabi-`), PalmPDK/PalmSDK,
-  novacom deploy — installed on the Mac used for receiver builds. Device
-  glibc is 2.5-era; builds must avoid glibc ≥2.7 symbols.
+  novacom deploy — all on the **Linux VM**, which is where the receiver is
+  built, packaged and installed from (`receiver/build.sh`, `package.sh`,
+  `palm-install`). The Mac builds only the Swift sender. Device glibc is
+  2.5-era; builds must avoid glibc ≥2.7 symbols.
 - Liveness detection (both directions) must be **bytes received**, never
   socket/connect state — a sleeping peer's kernel keeps completing TCP
   handshakes on its own, and half-open sockets never trigger an error
